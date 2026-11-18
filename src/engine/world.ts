@@ -2,10 +2,11 @@
 // devient une petite mise en scène : un membre de l'équipe arrive par la porte, va à son bureau, tape
 // ou lit selon ce qu'il fait vraiment, se lève pour rendre son rapport au chef, puis repart.
 import type { ActKind, OfficeEvent, PlanItem, Role } from '../../shared/protocol.ts';
+import { normRole } from '../../shared/activity.ts';
 import { Cat } from './cat.ts';
 import { Fx } from './fx.ts';
 import { iconFor } from './icons.ts';
-import { CHEF_SEAT, SEATS, SPOTS, T, WINDOWS, tileFeet, walkGrid, type Seat } from './layout.ts';
+import { CHEF_SEAT, layoutVersion, PRINTER, SEATS, SPOTS, T, WINDOWS, tileFeet, walkGrid, type Seat } from './layout.ts';
 import { findPath, type Tile } from './path.ts';
 import type { Dir, Eyes, Pose } from './robots.ts';
 
@@ -219,7 +220,16 @@ export class World {
   }
 
   // ── Les places ──
+  private gridVersion = layoutVersion;
+  /** Le plan a changé (le nombre de places) : on recalcule où l'on peut marcher. */
+  private syncLayout() {
+    if (this.gridVersion === layoutVersion) return;
+    this.gridVersion = layoutVersion;
+    this.grid = walkGrid();
+  }
+
   private assignSeat(role: Role): Seat | null {
+    this.syncLayout();
     const free = (r: Role | null) => SEATS.find((s) => (r === null || s.role === r) && !this.seatOf.has(s.id)) ?? null;
     return free(role) ?? (role === 'renfort' ? free(null) : null);
   }
@@ -236,7 +246,7 @@ export class World {
 
   /** Les rapports se posent ici, dans la corbeille du bureau du chef. */
   get inboxPt(): Pt { return { x: 9 * T + 52, y: 7 * T - 2 }; }
-  get printerPt(): Pt { return { x: 12 * T + 8, y: 4 * T - 4 }; }
+  get printerPt(): Pt { return { x: PRINTER[0] * T + 8, y: PRINTER[1] * T - 4 }; }
 
   // ── Les événements ──
   apply(ev: OfficeEvent, live: boolean) {
@@ -278,9 +288,10 @@ export class World {
       }
       case 'hire': {
         if (this.actors.has(ev.id)) break;
-        const seat = this.assignSeat(ev.role);
-        const a = new Actor(ev.id, ev.role, ev.name, SPOTS.doorOut.x - 8 + Math.random() * 16, SPOTS.doorOut.y);
-        if (!this.assignments.some((x) => x.id === ev.id)) this.assignments.push({ id: ev.id, role: ev.role, name: ev.name, task: ev.task, status: 'working' });
+        const role = normRole(ev.role);
+        const seat = this.assignSeat(role);
+        const a = new Actor(ev.id, role, ev.name, SPOTS.doorOut.x - 8 + Math.random() * 16, SPOTS.doorOut.y);
+        if (!this.assignments.some((x) => x.id === ev.id)) this.assignments.push({ id: ev.id, role, name: ev.name, task: ev.task, status: 'working' });
         if (seat) { this.seatOf.set(seat.id, a.id); a.seat = seat; }
         else a.standSpot = this.overflowSpot();
         this.actors.set(a.id, a);
@@ -455,7 +466,7 @@ export class World {
     for (const until of this.wiggles.values()) if (until > this.time) moving = true;
     for (const a of this.actors.values()) {
       if (a.id.startsWith('demo-') && this.time - a.actAt > 2 + Math.random() * 3) {
-        const kinds: ActKind[] = a.role === 'recherche' ? ['search', 'web'] : a.role === 'code' ? ['write', 'bash'] : a.role === 'analyse' ? ['read', 'write'] : ['write', 'edit'];
+        const kinds: ActKind[] = a.role === 'recherche' ? ['search', 'web'] : a.role === 'code' ? ['write', 'bash'] : a.role === 'relecture' ? ['read', 'bash'] : ['write', 'edit'];
         a.act = kinds[Math.floor(Math.random() * kinds.length)];
         a.actAt = this.time;
         this.fx.floatIcon(a.x, a.y - 24, iconFor(a.act));
@@ -513,7 +524,7 @@ export class World {
 
   /** Pour la visite guidée sans mission : un agent par coin, assis à son bureau, qui travaille. */
   demoTeam(on: boolean) {
-    const demo: [string, Role, string][] = [['demo-1', 'recherche', 'Iris'], ['demo-2', 'recherche', 'Hugo'], ['demo-3', 'code', 'Ada'], ['demo-4', 'design', 'Frida'], ['demo-5', 'redaction', 'Colette'], ['demo-6', 'analyse', 'Marie']];
+    const demo: [string, Role, string][] = [['demo-1', 'recherche', 'Iris'], ['demo-2', 'recherche', 'Hugo'], ['demo-3', 'code', 'Ada'], ['demo-4', 'design', 'Frida'], ['demo-5', 'redaction', 'Colette'], ['demo-6', 'relecture', 'Marie']];
     if (on) {
       for (const [id, role, name] of demo) {
         if (this.actors.has(id)) continue;

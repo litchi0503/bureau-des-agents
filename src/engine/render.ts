@@ -4,7 +4,7 @@
 // Tout se dessine sur une toute petite image (352 × 256 pixels), agrandie sans flou : ça ne coûte presque rien.
 import type { ActKind } from '../../shared/protocol.ts';
 import { furniturePlacement } from './furniture.ts';
-import { BOARD, CLOCK, FURNITURE, H, NEON, T, W, WINDOWS, type Furn } from './layout.ts';
+import { BOARD, CLOCK, FURNITURE, H, layoutVersion, NEON, T, W, WINDOWS, type Furn } from './layout.ts';
 import { g2d, makeCanvas, P, rgba, rng, type G } from './pixels.ts';
 import { ANCHOR_X, ANCHOR_Y, robotSprite } from './robots.ts';
 import { drawRoom, neon, signs, type TimeOfDay } from './room.ts';
@@ -31,7 +31,8 @@ export class Renderer {
   private bgTod: TimeOfDay | null = null;
   private light = makeCanvas(W, H);
   private lg = g2d(this.light);
-  private placed: Placed[] = FURNITURE.map((f) => { const p = furniturePlacement(f); return { f, c: p.s.c, x: p.x, y: p.y, sortY: p.sortY }; });
+  private placed: Placed[] = [];
+  private placedVersion = -1;
   private stars: { x: number; y: number; p: number }[] = [];
 
   constructor() {
@@ -41,6 +42,10 @@ export class Renderer {
 
   draw(g: G, world: World, tod: TimeOfDay, now: Date) {
     if (!this.bg || this.bgTod !== tod) { this.bg = drawRoom(tod); this.bgTod = tod; }
+    if (this.placedVersion !== layoutVersion) {
+      this.placedVersion = layoutVersion;
+      this.placed = FURNITURE.map((f) => { const p = furniturePlacement(f); return { f, c: p.s.c, x: p.x, y: p.y, sortY: p.sortY }; });
+    }
     const t = world.time;
     g.globalCompositeOperation = 'source-over';
     g.globalAlpha = 1;
@@ -120,7 +125,7 @@ export class Renderer {
           }
           break;
         }
-        case 'analyse': {
+        case 'relecture': {
           g.fillStyle = '#141a2c';
           g.fillRect(p.x + 23, p.y + 2, 7, 6);
           const bars = ['#ffd166', P.orange, '#4fb3ff', '#3ddc97'];

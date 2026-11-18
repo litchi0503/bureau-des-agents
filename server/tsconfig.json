@@ -12,5 +12,5 @@
     "erasableSyntaxOnly": true,
     "types": ["node"]
   },
-  "include": [".", "../shared", "../scripts"]
+  "include": [".", "../shared", "../scripts", "../test"]
 }

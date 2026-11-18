@@ -158,7 +158,7 @@ function deskSprite(role: Role, seed: number): Sprite {
       papers(g, 2, 10, 4);
       mug(g, 24, 11, ROLES.redaction.color);
       break;
-    case 'analyse':
+    case 'relecture':
       laptop(g, 9, 8);
       dashboard(g, 22, 1);
       calculator(g, 2, 9);

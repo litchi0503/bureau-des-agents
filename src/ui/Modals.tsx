@@ -148,8 +148,6 @@ export function History() {
   );
 }
 
-const CHEF_MODELS: [string, string][] = [['sonnet', 'Sonnet (rapide, recommandé)'], ['opus', 'Opus (le plus fin)'], ['fable', 'Fable'], ['haiku', 'Haiku (éclair)'], ['', 'Le modèle par défaut de Claude Code']];
-const TEAM_MODELS: [string, string][] = [['sonnet', 'Sonnet (rapide, recommandé)'], ['haiku', 'Haiku (éclair, économe)'], ['opus', 'Opus (le plus fin)'], ['fable', 'Fable'], ['inherit', 'Le même que Max']];
 
 export function SettingsPanel() {
   const open = useOffice((s) => s.settingsOpen);
@@ -166,18 +164,6 @@ export function SettingsPanel() {
       <div className="modal settings" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><b>Réglages du bureau</b><button className="close" onClick={close} aria-label="Fermer">×</button></div>
         <div className="modal-body">
-          <label className="field">
-            <span>Le cerveau de Max (le chef)</span>
-            <select value={settings.chefModel} onChange={(e) => send({ t: 'settings', settings: { chefModel: e.target.value } })}>
-              {CHEF_MODELS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>Le cerveau de l’équipe</span>
-            <select value={settings.teamModel} onChange={(e) => send({ t: 'settings', settings: { teamModel: e.target.value } })}>
-              {TEAM_MODELS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </label>
           <div className="field">
             <span>Les permissions</span>
             <label className="radio"><input type="radio" checked={settings.permission === 'auto'} onChange={() => send({ t: 'settings', settings: { permission: 'auto' } })} /> L’équipe décide seule, et lève la main pour les gestes risqués</label>

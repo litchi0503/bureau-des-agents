@@ -1,7 +1,9 @@
 // La mémoire du bureau, côté navigateur : la mission en cours, l'équipe, le plan, les rendus, ce que
 // dit Max. Chaque événement venu du pont est rangé ici, puis transmis au moteur du jeu (les robots).
 import { create } from 'zustand';
-import { countStats, emptyStats } from '../../shared/activity.ts';
+import { countStats, emptyStats, normRole } from '../../shared/activity.ts';
+import { defaultSettings } from '../../shared/settings.ts';
+import { setPlaces } from '../engine/layout.ts';
 import type {
   ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, VersionInfo,
 } from '../../shared/protocol.ts';
@@ -117,6 +119,12 @@ const pref = <T,>(key: string, fallback: T): T => {
 };
 export const savePref = (key: string, v: unknown) => { try { localStorage.setItem('bureau:' + key, JSON.stringify(v)); } catch { /* navigation privée */ } };
 
+/** Autant de chaises que de places, dans le bureau. */
+function placesFrom(s: Settings) {
+  if (!s?.team) return;
+  setPlaces({ recherche: s.team.recherche.places, design: s.team.design.places, code: s.team.code.places, relecture: s.team.relecture.places, redaction: s.team.redaction.places });
+}
+
 const emptyChef = (): ChefView => ({ say: '', sayAt: 0, typing: '', thinkingAt: 0, act: null, acts: [] });
 
 let feedId = 0;
@@ -129,7 +137,7 @@ export const useOffice = create<S>((set, get) => ({
   connection: 'connecting',
   claude: null,
   dir: '',
-  settings: { chefModel: 'sonnet', teamModel: 'sonnet', permission: 'auto' },
+  settings: defaultSettings(),
   quota: null,
   missions: [],
   mission: null,
@@ -185,6 +193,7 @@ export const useOffice = create<S>((set, get) => ({
     switch (m.t) {
       case 'hello': {
         set({ claude: m.claude, dir: m.dir, settings: m.settings, quota: m.quota, missions: m.missions });
+        placesFrom(m.settings);
         if (s.replaying) break;
         if (m.current) {
           get().resetMission(m.current.mission);
@@ -222,6 +231,7 @@ export const useOffice = create<S>((set, get) => ({
         break;
       case 'settings':
         set({ settings: m.settings });
+        placesFrom(m.settings);
         break;
       case 'toast':
         get().toast(m.kind, m.text);
@@ -270,7 +280,7 @@ export const useOffice = create<S>((set, get) => ({
         break;
       case 'hire': {
         const a: AgentView = {
-          id: ev.id, role: ev.role, name: ev.name, task: ev.task, prompt: ev.prompt, status: 'working', act: null, acts: [],
+          id: ev.id, role: normRole(ev.role), name: ev.name, task: ev.task, prompt: ev.prompt, status: 'working', act: null, acts: [],
           say: '', sayAt: 0, report: '', hiredAt: at, tokens: 0, tools: 0,
         };
         const stats = { ...s.stats };

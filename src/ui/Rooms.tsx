@@ -2,7 +2,8 @@
 // la fiche d'un agent (sa mission, chacune de ses actions, son rapport), le plan de Max et son
 // historique, l'équipe et ses outils, la machine, les rendus et l'aperçu des sites créés.
 import { useEffect, useMemo, useState } from 'react';
-import { ROLE_TOOLS, ROLES, TOOL_INFO } from '../../shared/activity.ts';
+import { POLES, ROLE_TOOLS, ROLES, TOOL_INFO } from '../../shared/activity.ts';
+import { effortLabel, modelLabel } from '../../shared/settings.ts';
 import type { PlanItem, Role } from '../../shared/protocol.ts';
 import { jukebox, TRACKS } from '../audio/music.ts';
 import { sfx } from '../audio/sfx.ts';
@@ -212,8 +213,8 @@ function MachineRoom() {
   const rows: [string, React.ReactNode][] = [
     ['Claude Code', claude?.found ? `${claude.version} · ${claude.path}` : connection === 'demo' ? 'Démo (rediffusion d’une vraie mission)' : 'introuvable'],
     ['Connexion', 'ton abonnement Claude (aucune clé API, aucune facturation à l’usage)'],
-    ['Cerveau de Max', mission?.model ? `${mission.model} (réglage : ${settings.chefModel || 'par défaut'})` : settings.chefModel || 'par défaut'],
-    ['Cerveau de l’équipe', settings.teamModel === 'inherit' ? 'le même que Max' : settings.teamModel],
+    ['Cerveau de Max', `${mission?.model ?? modelLabel(settings.team.chef.model)} · puissance ${effortLabel(settings.team.chef.effort).toLowerCase()}`],
+    ['L’équipe', POLES.filter((p) => p !== 'chef').map((p) => `${ROLES[p].label} : ${modelLabel(settings.team[p].model)}`).join(' · ')],
     ['Permissions', settings.permission === 'auto' ? 'automatiques : l’agent lève la main pour les gestes risqués' : 'demandées avant chaque commande'],
     ['Énergie (5 h)', quota ? `${Math.round(quota.fiveHour * 100)} % utilisés${quota.resetsAt ? `, rechargée à ${new Date(quota.resetsAt * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : ''}` : 'pas encore mesurée'],
     ['Dossier du bureau', dir ? tilde(dir) : '—'],
@@ -283,7 +284,7 @@ function TeamRoom({ role }: { role?: Role }) {
   const [open, setOpen] = useState<string | null>(null);
   useEffect(() => { if (tab === 'history' && connection === 'live') send({ t: 'team_history' }); }, [tab, connection, send]);
   const working = (r: Role) => [...world.actors.values()].filter((a) => a.role === r && a.seated).length;
-  const roles: Role[] = ['chef', 'recherche', 'code', 'design', 'redaction', 'analyse'];
+  const roles: Role[] = POLES;
   const missions = useMemo(() => {
     const m = new Map<string, { title: string; at: number; entries: NonNullable<typeof history> }>();
     for (const e of history ?? []) {
@@ -315,7 +316,7 @@ function TeamRoom({ role }: { role?: Role }) {
         <div className="roles">
           {roles.map((r) => (
             <div key={r} className={`role-card ${role === r ? 'focus' : ''}`} style={{ ['--c' as string]: ROLES[r].color }}>
-              <div className="role-head"><Avatar role={r} size={34} /><div><b>{ROLES[r].icon} {ROLES[r].label}</b><span>{r === 'chef' ? 'Max' : `agent « ${ROLES[r].type} »`} · cerveau : {r === 'chef' ? settings.chefModel || 'par défaut' : settings.teamModel === 'inherit' ? 'comme Max' : settings.teamModel}</span></div>{working(r) > 0 && <em>{working(r)} au travail</em>}</div>
+              <div className="role-head"><Avatar role={r} size={34} /><div><b>{ROLES[r].icon} {ROLES[r].label}</b><span>{r === 'chef' ? 'le chef' : `agent « ${ROLES[r].type} »`} · {modelLabel(settings.team[r as Exclude<Role, 'renfort'>].model)}, puissance {effortLabel(settings.team[r as Exclude<Role, 'renfort'>].effort).toLowerCase()}{r !== 'chef' ? ` · ${settings.team[r as Exclude<Role, 'renfort'>].places} place${settings.team[r as Exclude<Role, 'renfort'>].places > 1 ? 's' : ''}` : ''}</span></div>{working(r) > 0 && <em>{working(r)} au travail</em>}</div>
               <p>{ROLES[r].what}</p>
               <div className="tools">{ROLE_TOOLS[r].map((t) => <span key={t} title={TOOL_INFO[t] ?? t}>{t}<small>{TOOL_INFO[t] ?? ''}</small></span>)}</div>
             </div>

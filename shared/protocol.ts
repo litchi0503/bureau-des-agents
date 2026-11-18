@@ -2,8 +2,14 @@
 // Tout passe par une seule connexion WebSocket, en JSON. Syntaxe « effaçable » uniquement :
 // ce fichier est lu tel quel par Node (sans compilation) et par Vite.
 
-/** Les métiers du bureau. « chef » = l'agent principal, celui à qui tu parles. */
-export type Role = 'chef' | 'recherche' | 'code' | 'design' | 'redaction' | 'analyse' | 'renfort';
+/**
+ * Les pôles du bureau. « chef » = Max, l'agent principal, celui à qui tu parles.
+ * (Les anciennes missions peuvent contenir « analyse » : il est rangé dans Recherche, voir normRole.)
+ */
+export type Role = 'chef' | 'recherche' | 'design' | 'code' | 'relecture' | 'redaction' | 'renfort';
+
+/** Les six pôles qu'on règle (le renfort, c'est un agent inconnu du bureau). */
+export type Pole = Exclude<Role, 'renfort'>;
 
 /** Ce que fait un agent à un instant : sert à l'animation, à l'icône et à la bulle. */
 export type ActKind = 'search' | 'web' | 'read' | 'write' | 'edit' | 'bash' | 'plan' | 'skill' | 'mcp' | 'other';
@@ -85,14 +91,8 @@ export interface TeamEntry {
   report: string;
 }
 
-export interface Settings {
-  /** le cerveau du chef : '' = le modèle par défaut de Claude Code */
-  chefModel: string;
-  /** le cerveau de l'équipe : sonnet, haiku, opus, fable ou inherit (le même que le chef) */
-  teamModel: string;
-  /** auto : l'équipe décide seule et ne demande que pour les gestes risqués ; ask : elle demande avant chaque commande */
-  permission: 'auto' | 'ask';
-}
+export type { Settings } from './settings.ts';
+import type { Settings } from './settings.ts';
 
 /** L'énergie de l'abonnement : part utilisée (0-1) de la fenêtre de 5 h et de celle de la semaine, et leur recharge (secondes). */
 export interface Quota { fiveHour: number; resetsAt: number | null; sevenDay?: number; sevenDayResetsAt?: number | null }

@@ -41,6 +41,8 @@ export interface ProcessOptions {
   cwd: string;
   permissionMode: string;
   model?: string;
+  /** la puissance de Max (--effort) */
+  effort?: string;
   resume?: string;
   /** les outils de la séance (mode restreint : rien d'autre n'existe) */
   tools: string[];
@@ -93,6 +95,7 @@ export class ClaudeProcess {
       '--agents', o.agents,
       '--append-system-prompt', o.appendSystemPrompt];
     if (o.model) args.push('--model', o.model);
+    if (o.effort) args.push('--effort', o.effort);
     if (o.resume) args.push('--resume', o.resume);
     if (o.allowedTools.length) args.push('--allowedTools', o.allowedTools.join(','));
     // pas de questions à choix multiples : le chef pose ses questions dans la conversation

@@ -9,10 +9,11 @@ import { existsSync, readFileSync, renameSync, watch, writeFileSync, type FSWatc
 import { appendFile, copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { countStats, emptyStats } from '../shared/activity.ts';
+import { countStats, emptyStats, normRole } from '../shared/activity.ts';
 import type { ClaudeInfo, FileInfo, Logged, MissionInfo, OfficeEvent, Quota, Role, ServerMsg, Settings, TeamEntry, VersionInfo } from '../shared/protocol.ts';
 import { ClaudeProcess, Normalizer, quotaFromEvent, type ClaudeBinary, type TurnResult } from './claude.ts';
 import { agentsJson, ALWAYS_ALLOWED, chefPrompt, SESSION_TOOLS } from './team.ts';
+import { defaultSettings, mergeSettings } from '../shared/settings.ts';
 
 const RULES_FILE = 'Règlement du bureau.md';
 
@@ -41,9 +42,18 @@ Le dossier caché « .bureau » garde l'état du bureau et l'enregistrement de c
 Tu peux le supprimer pour tout recommencer.
 `;
 
-const DEFAULT_SETTINGS: Settings = { chefModel: 'sonnet', teamModel: 'sonnet', permission: 'auto' };
-const CHEF_MODELS = ['', 'sonnet', 'opus', 'haiku', 'fable'];
-const TEAM_MODELS = ['sonnet', 'haiku', 'opus', 'fable', 'inherit'];
+/**
+ * Les réglages par défaut. Le garde-fou se règle dans le bureau ; les anciennes variables d'environnement
+ * (BUREAU_MAX_ENERGY, BUREAU_MAX_MISSION) servent de repli tant que rien n'est enregistré.
+ */
+function initialSettings(): Settings {
+  const s = defaultSettings();
+  const env = percentFromEnv('BUREAU_MAX_ENERGY', -1);
+  if (env >= 0) { const v = env === 0 ? 100 : Math.max(10, Math.round(env / 5) * 5); s.guard.max5h = v; s.guard.maxWeek = v; }
+  const mission = percentFromEnv('BUREAU_MAX_MISSION', -1);
+  if (mission > 0) s.guard.budget = [5, 10, 15, 25].find((x) => x >= mission) ?? 25;
+  return s;
+}
 const IDLE_STOP_MS = 15 * 60 * 1000;
 const MAX_LOG = 8000;
 const MAX_MISSIONS = 300;
@@ -132,7 +142,7 @@ export class Bureau {
   private stateFile: string;
   private recDir: string;
   private verDir: string;
-  private state: State = { missions: [], settings: { ...DEFAULT_SETTINGS } };
+  private state: State = { missions: [], settings: initialSettings() };
   private saveTimer: NodeJS.Timeout | null = null;
   current: Current | null = null;
   quota: Quota | null = null;
@@ -160,7 +170,7 @@ export class Bureau {
     if (existsSync(this.stateFile)) {
       try {
         const s = JSON.parse(await readFile(this.stateFile, 'utf8')) as Partial<State>;
-        this.state = { missions: Array.isArray(s.missions) ? s.missions : [], settings: { ...DEFAULT_SETTINGS, ...(s.settings ?? {}) }, pause: s.pause, quota: s.quota };
+        this.state = { ...s, missions: Array.isArray(s.missions) ? s.missions : [], settings: mergeSettings(initialSettings(), s.settings), pause: s.pause, quota: s.quota };
         // la dernière mesure d'énergie : le bureau l'affiche dès l'ouverture (elle se périme toute seule à la recharge)
         this.quota = s.quota ?? null;
       } catch { /* état illisible : on repart proprement */ }
@@ -178,12 +188,7 @@ export class Bureau {
   get settings() { return this.state.settings; }
 
   setSettings(p: Partial<Settings>) {
-    const cur = this.state.settings;
-    this.state.settings = {
-      chefModel: typeof p.chefModel === 'string' && CHEF_MODELS.includes(p.chefModel) ? p.chefModel : cur.chefModel,
-      teamModel: typeof p.teamModel === 'string' && TEAM_MODELS.includes(p.teamModel) ? p.teamModel : cur.teamModel,
-      permission: p.permission === 'ask' || p.permission === 'auto' ? p.permission : cur.permission,
-    };
+    this.state.settings = mergeSettings(this.state.settings, p);
     this.save();
     this.broadcast({ t: 'settings', settings: this.state.settings });
   }
@@ -448,8 +453,8 @@ export class Bureau {
     const proc: ClaudeProcess = new ClaudeProcess(
       {
         bin: this.claude.path, cwd: cur.mission.folder, permissionMode: s.permission === 'ask' ? 'acceptEdits' : 'auto',
-        model: s.chefModel || undefined, resume, tools: SESSION_TOOLS, allowedTools: ALWAYS_ALLOWED,
-        agents: agentsJson(s), appendSystemPrompt: chefPrompt(readRules(this.dir)), useApiKey: process.env.BUREAU_USE_API_KEY === '1',
+        model: s.team.chef.model, effort: s.team.chef.effort, resume, tools: SESSION_TOOLS, allowedTools: ALWAYS_ALLOWED,
+        agents: agentsJson(s), appendSystemPrompt: chefPrompt(readRules(this.dir), s), useApiKey: process.env.BUREAU_USE_API_KEY === '1',
       },
       (m) => {
         if (cur.live?.proc !== proc) return; // un ancien processus qui parle encore
@@ -632,7 +637,7 @@ export class Bureau {
         const ev = l.ev;
         if (ev.k === 'hire') {
           byId.set(ev.id, {
-            missionId: m.id, missionTitle: m.title, at: l.at, id: ev.id, name: ev.name, role: ev.role as Role, task: ev.task,
+            missionId: m.id, missionTitle: m.title, at: l.at, id: ev.id, name: ev.name, role: normRole(ev.role), task: ev.task,
             status: 'working', tools: 0, tokens: 0, ms: 0, report: '',
           });
         } else if (ev.k === 'report') {

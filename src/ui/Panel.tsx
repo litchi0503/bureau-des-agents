@@ -53,7 +53,7 @@ function Welcome() {
         <h3>Comment ça marche</h3>
         <ol className="steps">
           <li><b>Tu dis à Max ce que tu veux</b>, au clavier ou à la voix.</li>
-          <li><b>Il fait le plan et appelle l’équipe</b> : chacun file à son poste (recherche, code, design, rédaction, analyse).</li>
+          <li><b>Il fait le plan et appelle l’équipe</b> : chacun file à son poste (recherche, design, code, relecture, rédaction).</li>
           <li><b>Tu les regardes bosser</b>, en vrai : chaque bulle, c’est ce que l’agent fait à cet instant.</li>
           <li><b>Ils te rendent le travail</b> : les fichiers arrivent dans « Les rendus » et dans ton dossier.</li>
         </ol>
