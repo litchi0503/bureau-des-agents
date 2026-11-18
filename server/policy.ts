@@ -18,6 +18,8 @@ export interface GitContext {
   current: string;
   /** le script de merge du projet, s'il y en a un (sa commande) */
   mergeScript?: string;
+  /** un merge vers la base vient d'être autorisé (vérifications vertes) : on peut pousser la base */
+  baseOpen?: boolean;
 }
 
 /** Un mot de la commande, ou un opérateur qui sépare deux commandes. */
@@ -44,10 +46,18 @@ export function lex(src: string): Tok[] {
     if (c === '`') { push(); out.push({ op: ';' }); continue; }
     if (c === '$' && src[i + 1] === '(') { push(); out.push({ op: ';' }); i++; continue; }
     if (/\s/.test(c)) { if (c === '\n') { push(); out.push({ op: ';' }); } else push(); continue; }
-    if (';&|()<>'.includes(c)) {
+    if (c === '>' || c === '<') {
+      // « 2>fichier », « 2>&1 », « >>fichier » : une redirection (le chiffre n'est pas un argument)
+      if (has && /^\d+$/.test(cur)) { cur = ''; has = false; } else push();
+      if (src[i + 1] === '&' && /\d/.test(src[i + 2] ?? '')) { i += 2; while (/\d/.test(src[i + 1] ?? '')) i++; continue; }
+      if (src[i + 1] === '>') i++;
+      out.push({ op: '>' });
+      continue;
+    }
+    if (';&|()'.includes(c)) {
       push();
       const two = src.slice(i, i + 2);
-      if (two === '&&' || two === '||' || two === '>>' || two === '2>' || two === '&>') { out.push({ op: two }); i++; } else out.push({ op: c });
+      if (two === '&>') { out.push({ op: '>' }); i++; } else if (two === '&&' || two === '||') { out.push({ op: two }); i++; } else out.push({ op: c });
       continue;
     }
     if (c === '#' && !has) { while (i < src.length && src[i] !== '\n') i++; i--; continue; }
@@ -65,7 +75,7 @@ export function commands(src: string, depth = 0): string[][] {
   let redirect = false;
   for (const t of toks) {
     if ('op' in t) {
-      if (t.op === '>' || t.op === '<' || t.op === '>>' || t.op === '2>' || t.op === '&>') { redirect = true; continue; }
+      if (t.op === '>') { redirect = true; continue; }
       if (cur.length) out.push(cur);
       cur = [];
       continue;
@@ -145,7 +155,8 @@ export function checkGit(cmd: string, ctx: GitContext): string | null {
         const targets = specs.length ? specs.map((s) => dstOf(s, ctx.current)) : [ctx.current];
         for (const t of targets) {
           if (forbidden.has(t)) return `Refusé par le bureau : la branche ${t} est interdite.`;
-          if (t === ctx.base) return `Refusé par le bureau : on ne pousse pas directement sur ${ctx.base}. Pousse la branche ${ctx.work}.`;
+          if (t === ctx.base && !ctx.baseOpen) return `Refusé par le bureau : on ne pousse sur ${ctx.base} qu’après un merge vérifié (lint, typage, tests, build verts). Pousse la branche ${ctx.work}.`;
+          if (t === ctx.base) continue;
           if (t !== ctx.work && !t.startsWith('bureau/')) return `Refusé par le bureau : seule la branche de travail (${ctx.work}) peut être poussée.`;
         }
         break;

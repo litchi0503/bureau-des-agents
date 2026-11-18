@@ -10,6 +10,8 @@ const allowed = (cmd: string, c: Partial<GitContext> = {}) => assert.equal(check
 test('découpe des commandes', () => {
   assert.deepEqual(commands('cd x && git push origin main; echo "a b"'), [['cd', 'x'], ['git', 'push', 'origin', 'main'], ['echo', 'a b']]);
   assert.deepEqual(commands('bash -c "git push -f"').slice(-1), [['git', 'push', '-f']]);
+  assert.deepEqual(commands('git push origin x 2>&1 | tail -5'), [['git', 'push', 'origin', 'x'], ['tail', '-5']]);
+  assert.deepEqual(commands('npm test > out.txt 2> err.txt'), [['npm', 'test']]);
   assert.deepEqual(commands('echo "$(git reset --hard)"').find((c) => c[0] === 'git'), ['git', 'reset', '--hard']);
 });
 
@@ -17,10 +19,17 @@ test('push : seulement la branche de travail, jamais forcé', () => {
   allowed('git push -u origin bureau/d-001');
   allowed('git push');
   allowed('git -C . push origin HEAD');
+  allowed('git push -u origin bureau/d-001 2>&1 | tail -5');
+  allowed('git add a && git commit -q -m "x" && git push -u origin bureau/d-001 2>/dev/null');
+  allowed('git push origin bureau/d-001 > /tmp/log.txt 2>&1');
+  refused('git push origin main 2>&1 | tail -5');
   refused('git push origin main');
   refused('git push origin bureau/d-001:main');
   refused('git push origin HEAD:refs/heads/main');
   refused('git push origin dev');
+  allowed('git push origin dev', { baseOpen: true });
+  refused('git push --force origin dev', { baseOpen: true });
+  refused('git push origin main', { baseOpen: true, base: 'main' });
   refused('git push --force origin bureau/d-001');
   refused('git push -f');
   refused('git push origin +bureau/d-001');

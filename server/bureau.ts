@@ -149,6 +149,8 @@ interface Current {
   relaunched: Set<string>;
   /** la demande travaille dans un projet : ses consignes (git, carte, carnet) */
   brief?: ProjectBrief;
+  /** un merge vers la base a été vérifié et autorisé : la base peut être poussée */
+  baseOpen?: boolean;
 }
 
 function newCurrent(mission: MissionInfo, extra: Partial<Current> = {}): Current {
@@ -1025,6 +1027,7 @@ export class Bureau {
         this.record(cur, { k: 'note', who: 'chef', text: `Vérification avant merge : ${c.name} (${c.cmd}) ${r.ok ? 'verte' : 'en échec'}.`, level: r.ok ? 'info' : 'warn' });
         if (!r.ok) return `Merge refusé : ${c.name} (${c.cmd}) n’est pas vert.\n${r.out}`;
       }
+      cur.baseOpen = true;
     }
     return null;
   }
@@ -1038,7 +1041,7 @@ export class Bureau {
   private async gitContext(cur: Current, proj: ProjectInfo): Promise<GitContext> {
     const current = (await git(proj.path, ['branch', '--show-current'])).out;
     const merge = proj.commands.find((c) => c.name === 'Merge' && c.confirmed)?.cmd;
-    return { access: proj.access, base: proj.base, work: cur.mission.branch ?? '', forbidden: proj.forbidden, current, mergeScript: merge?.replace(/^(npm run|pnpm|yarn|bash|sh)\s+/, '') };
+    return { access: proj.access, base: proj.base, work: cur.mission.branch ?? '', forbidden: proj.forbidden, current, mergeScript: merge?.replace(/^(npm run|pnpm|yarn|bash|sh)\s+/, ''), baseOpen: cur.baseOpen };
   }
 
   /** Où en est l'équipe (pour /status sur Telegram). */
