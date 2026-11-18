@@ -25,4 +25,4 @@ Branche : `bureau/reglages-suivi` (partie de `reprise/garde-fou-existant`).
 7. Carnet de Max : fait
 8. Telegram : fait
 9. Économie de tokens : fait
-10. Vérifications réelles : à faire
+10. Vérifications réelles : faites (voir la PR)
