@@ -197,6 +197,17 @@ async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
     case 'settings':
       bureau.setSettings(m.settings ?? {});
       break;
+    case 'agent_log': {
+      const missionId = str(m.missionId, 40), who = str(m.who, 100);
+      const { entry, lines } = await bureau.history.agentLog(missionId, who);
+      send({ t: 'agent_log', missionId, who, entry, lines });
+      break;
+    }
+    case 'history_search': {
+      const q = str(m.q, 200), page = Math.max(0, Math.min(10000, Number(m.page) || 0));
+      send({ t: 'history_page', q, page, ...bureau.history.search(q, page) });
+      break;
+    }
     case 'relaunch':
       bureau.relaunch(str(m.who, 100));
       break;

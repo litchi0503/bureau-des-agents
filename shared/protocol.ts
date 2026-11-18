@@ -93,6 +93,30 @@ export interface ClaudeInfo { found: boolean; version?: string; path?: string }
 /** Une version enregistrée d'un fichier rendu (à chaque modification par l'équipe). */
 export interface VersionInfo { id: string; at: number; size: number; by: string }
 
+/** Une ligne de l'historique d'un agent : l'heure, le type, le détail, le modèle. */
+export interface HistLine { at: number; type: 'action' | 'erreur' | 'état' | 'modèle' | 'mission' | 'rapport' | 'message' | 'note'; detail: string; model?: string }
+
+/** Un passage d'un agent au bureau, dans l'historique sur disque (fenêtre 👥). */
+export interface HistEntry {
+  missionId: string;
+  missionTitle: string;
+  projectId?: string;
+  id: string;
+  name: string;
+  role: Role;
+  task: string;
+  prompt?: string;
+  at: number;
+  endAt?: number;
+  status: 'working' | 'done' | 'crashed';
+  model?: string;
+  effort?: string;
+  switched?: string;
+  tokens?: number;
+  ms?: number;
+  report?: string;
+}
+
 /** Un passage d'un agent au bureau (pour l'historique de l'équipe). */
 export interface TeamEntry {
   missionId: string;
@@ -169,6 +193,9 @@ export type ClientMsg =
   | { t: 'team_history' }
   | { t: 'replay'; missionId: string }
   | { t: 'settings'; settings: Partial<Settings> }
+  /** le journal d'un agent (sa fiche), et une page de l'historique de l'équipe (👥) */
+  | { t: 'agent_log'; missionId: string; who: string }
+  | { t: 'history_search'; q: string; page: number }
   /** relancer un agent planté (bouton « Relancer » de sa fiche) */
   | { t: 'relaunch'; who: string };
 
@@ -186,4 +213,6 @@ export type ServerMsg =
   | { t: 'quota'; quota: Quota }
   | { t: 'settings'; settings: Settings }
   | { t: 'telegram'; status: TelegramStatus }
+  | { t: 'agent_log'; missionId: string; who: string; entry: HistEntry | null; lines: HistLine[] }
+  | { t: 'history_page'; q: string; page: number; total: number; entries: HistEntry[] }
   | { t: 'toast'; kind: 'info' | 'error'; text: string };

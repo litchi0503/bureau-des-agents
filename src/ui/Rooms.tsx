@@ -4,6 +4,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { POLES, ROLE_TOOLS, ROLES, TOOL_INFO } from '../../shared/activity.ts';
 import { effortLabel, modelLabel } from '../../shared/settings.ts';
+import type { HistLine } from '../../shared/protocol.ts';
+import { PASTILLE } from './pastille.ts';
 import type { PlanItem, Role } from '../../shared/protocol.ts';
 import { jukebox, TRACKS } from '../audio/music.ts';
 import { sfx } from '../audio/sfx.ts';
@@ -40,7 +42,7 @@ export function Rooms() {
   const modal = useOffice((s) => s.modal);
   if (!modal) return null;
   switch (modal.kind) {
-    case 'agent': return <AgentRoom id={modal.id} />;
+    case 'agent': return <AgentRoom id={modal.id} missionId={modal.missionId} />;
     case 'board': return <BoardRoom />;
     case 'clock': return <ClockRoom />;
     case 'machine': return <MachineRoom />;
@@ -51,45 +53,132 @@ export function Rooms() {
   }
 }
 
-// ── La fiche d'un agent ──
-function AgentRoom({ id }: { id: string }) {
-  const a = useOffice((s) => s.agents[id]);
-  const live = world.actors.get(id);
-  const html = useMemo(() => (a?.report ? mdToHtml(tidy(a.report)) : ''), [a?.report]);
-  if (!a) return <Shell title="Cet agent n’est plus là">Il a quitté le bureau.</Shell>;
-  const role = ROLES[a.role];
-  const working = a.status === 'working' || a.status === 'reporting';
+// ── La fiche d'un agent (ou de Max) : son état, son modèle, sa frise, son journal, sa mission, son rapport, ses fichiers ──
+const FILTERS: [string, string, (t: HistLine['type']) => boolean][] = [
+  ['all', 'Tout', () => true],
+  ['act', 'Actions', (t) => t === 'action' || t === 'rapport' || t === 'message'],
+  ['err', 'Erreurs', (t) => t === 'erreur'],
+  ['state', 'États', (t) => t === 'état' || t === 'mission' || t === 'note'],
+  ['model', 'Modèle', (t) => t === 'modèle'],
+];
+const LINE_COLOR: Record<HistLine['type'], string> = {
+  action: '#7CF0B4', rapport: '#7CF0B4', message: '#c9c9d2', erreur: '#ff6b6b', état: '#4FB3FF', mission: '#9aa3b5', note: '#ffb27a', modèle: '#c4b5fd',
+};
+
+function AgentRoom({ id, missionId: mid }: { id: string; missionId?: string }) {
+  const mission = useOffice((s) => s.mission);
+  const missionId = mid ?? mission?.id ?? '';
+  const live = useOffice((s) => (s.mission?.id === missionId ? (id === 'chef' ? null : s.agents[id]) : undefined));
+  const track = useOffice((s) => (s.mission?.id === missionId ? s.track[id] : undefined));
+  const log = useOffice((s) => s.agentLogs[`${missionId}|${id}`]);
+  const files = useOffice(useShallow((s) => (s.mission?.id === missionId ? s.files.filter((f) => f.by === id) : [])));
+  const order = useOffice((s) => s.order);
+  const agents = useOffice((s) => s.agents);
+  const chef = useOffice((s) => s.chef);
+  const send = useOffice((s) => s.send);
+  const connection = useOffice((s) => s.connection);
+  const replaying = useOffice((s) => s.replaying);
+  const working = useOffice((s) => s.busySince !== null);
+  const [tab, setTab] = useState<'log' | 'brief' | 'report' | 'files'>('log');
+  const [filter, setFilter] = useState('all');
+  const now = useNow(1000);
+  // le journal vient du serveur (l'historique sur disque) ; tant que l'agent travaille, on le relit de temps en temps
+  useEffect(() => {
+    if (connection !== 'live' || replaying || !missionId) return;
+    send({ t: 'agent_log', missionId, who: id });
+    if (!working) return;
+    const t = setInterval(() => send({ t: 'agent_log', missionId, who: id }), 4000);
+    return () => clearInterval(t);
+  }, [connection, replaying, missionId, id, working, send]);
+  const entry = log?.entry ?? null;
+  const isChef = id === 'chef';
+  const role: Role = isChef ? 'chef' : live?.role ?? entry?.role ?? 'renfort';
+  const info = ROLES[role];
+  const name = isChef ? 'Max' : live?.name ?? entry?.name ?? 'Un agent';
+  const task = isChef ? (mission?.id === missionId ? mission?.title : entry?.missionTitle) ?? '' : live?.task ?? entry?.task ?? '';
+  const prompt = isChef ? (mission?.id === missionId ? mission?.prompt : entry?.prompt) ?? '' : live?.prompt ?? entry?.prompt ?? '';
+  const report = isChef ? (mission?.id === missionId ? mission?.final : '') ?? '' : live?.report || entry?.report || '';
+  const html = useMemo(() => (report ? mdToHtml(tidy(report)) : ''), [report]);
+  // le poste : son rang parmi les agents du même pôle dans cette demande
+  const post = isChef ? 1 : Math.max(1, order.filter((k) => agents[k]?.role === role).indexOf(id) + 1);
+  const crashed = track?.state === 'crashed' || live?.status === 'failed' || entry?.status === 'crashed';
+  const crashLine = log?.lines.find((l) => l.type === 'erreur');
+  const since = isChef ? (track?.timeline[0]?.at ?? entry?.at ?? 0) : live?.hiredAt ?? entry?.at ?? 0;
+  const until = isChef ? (working ? now : entry?.endAt ?? now) : live?.leftAt ?? (live ? now : entry?.endAt ?? now);
+  const model = track?.model || entry?.model || '';
+  const switched = track?.switched ?? (entry?.switched ? { from: entry.switched.split(' → ')[0], to: entry.switched.split(' → ')[1], at: 0 } : null);
+  const effort = track?.effort || entry?.effort || '';
+  const tokens = live?.tokens || entry?.tokens || 0;
+  const lines = (log?.lines ?? []).filter((l) => FILTERS.find((f) => f[0] === filter)![2](l.type));
+  // la frise : la durée passée dans chaque état
+  const timeline = track?.timeline ?? [];
+  const segs = timeline.map((x, i) => ({ state: x.state, w: Math.max(1, (timeline[i + 1]?.at ?? until) - x.at) }));
+  const total = segs.reduce((a, x) => a + x.w, 0) || 1;
+  const canRelaunch = !isChef && crashed && !replaying && connection === 'live' && mission?.id === missionId;
+  const acts = isChef ? chef.acts : live?.acts ?? [];
   return (
-    <Shell title={<>{a.name}</>} sub={`${role.icon} ${role.label} · ${a.task}`}>
-      <div className="agent-hero" style={{ ['--c' as string]: role.color }}>
-        <Avatar role={a.role} size={72} />
-        <div>
-          <span className={`pill-status ${a.status}`}>{working ? (live?.seated ? 'Au travail' : 'En chemin') : a.status === 'done' ? 'A rendu son travail' : 'N’a pas pu finir'}</span>
-          <p className="now">{working && a.act ? <><i>{ICON[a.act.kind]}</i>{a.act.label}</> : a.status === 'done' ? 'Son rapport est sur le bureau de Max.' : working ? 'Il s’installe à son poste…' : ''}</p>
-          <p className="small muted">Un vrai sous-agent Claude Code (« {role.type || 'renfort'} »), avec ses propres outils : {ROLE_TOOLS[a.role].join(', ') || 'ceux de Max'}.</p>
+    <Shell title={<>{info.icon} {isChef ? 'Max · chef' : `${info.label} · poste ${post}`} <span className="muted">· {name}</span></>} sub={task ? `Demande : ${task}` : undefined} wide>
+      {crashed && (
+        <div className="crash-banner" role="alert">
+          <i aria-hidden="true" />
+          <div>
+            <b>Planté{track?.crashedAt ? ` à ${new Date(track.crashedAt).toLocaleTimeString('fr-FR')}` : ''}</b>
+            <span>{tidy(track?.reason || crashLine?.detail || 'Il n’a pas pu finir son travail.')}</span>
+          </div>
+          <button className="btn small" onClick={() => { setTab('log'); setFilter('err'); }}>Voir le journal</button>
+          {canRelaunch && <button className="btn small primary" onClick={() => { sfx('click'); send({ t: 'relaunch', who: id }); }}>Relancer</button>}
         </div>
+      )}
+      <div className="agent-facts">
+        <div><span>Modèle</span><b>{switched ? `${modelLabel(switched.from)} → ${modelLabel(switched.to)}` : model ? modelLabel(model.replace(/^claude-|-\d.*$/g, '')) : '—'}</b>{switched?.at ? <small>bascule à {new Date(switched.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</small> : null}</div>
+        <div><span>Puissance</span><b>{effort ? effortLabel(effort) : '—'}</b></div>
+        <div><span>Durée</span><b>{since ? fmtDuration(until - since) : '—'}</b></div>
+        <div><span>Consommation</span><b>{tokens ? `${tokens.toLocaleString('fr-FR')} jetons` : '—'}</b></div>
       </div>
-      <section className="room-sec">
-        <h4>Sa mission, écrite par Max</h4>
-        <p className="brief">{tidy(a.prompt)}</p>
-      </section>
-      {a.acts.length > 0 && (
-        <section className="room-sec">
-          <h4>Ce qu’il a fait <span className="count">{plural(a.acts.length, 'action', 'actions')}</span></h4>
-          <ActList acts={a.acts} />
-        </section>
+      {segs.length > 0 && (
+        <div className="frise-wrap">
+          <span className="k">Frise des états</span>
+          <div className="frise" role="img" aria-label={segs.map((x) => PASTILLE[x.state].label).join(', ')}>
+            {segs.map((x, i) => <span key={i} title={PASTILLE[x.state].label} style={{ flex: x.w / total, background: PASTILLE[x.state].color }} />)}
+          </div>
+        </div>
       )}
-      {html && (
-        <section className="room-sec">
-          <h4>Son rapport</h4>
-          <div className="md report" dangerouslySetInnerHTML={{ __html: html }} />
-        </section>
+      <nav className="sheet-tabs" aria-label="Onglets de la fiche">
+        <button className={tab === 'log' ? 'on' : ''} onClick={() => setTab('log')}>Journal</button>
+        <button className={tab === 'brief' ? 'on' : ''} onClick={() => setTab('brief')}>{isChef ? 'Ta demande' : 'Mission de Max'}</button>
+        <button className={tab === 'report' ? 'on' : ''} onClick={() => setTab('report')}>Rapport</button>
+        <button className={tab === 'files' ? 'on' : ''} onClick={() => setTab('files')}>Fichiers{files.length ? ` (${files.length})` : ''}</button>
+      </nav>
+      {tab === 'log' && (
+        <>
+          <div className="chips">{FILTERS.map(([k, l]) => <button key={k} className={`chip ${filter === k ? 'on' : ''}`} onClick={() => setFilter(k)}>{l}</button>)}</div>
+          {connection !== 'live' || replaying ? (acts.length ? <ActList acts={acts} /> : <p className="muted small">Le journal complet vit sur ton ordinateur (lance le bureau avec Claude Code).</p>)
+            : !log ? <p className="muted small">Chargement…</p>
+              : !lines.length ? <p className="muted small">Rien à montrer pour ce filtre.</p>
+                : (
+                  <ol className="journal">
+                    {lines.slice(0, 300).map((l, i) => (
+                      <li key={i}>
+                        <time>{new Date(l.at).toLocaleTimeString('fr-FR')}</time>
+                        <i style={{ background: LINE_COLOR[l.type] }} aria-hidden="true" />
+                        <span className={l.type === 'erreur' ? 'err' : ''}>{tidy(l.detail)}{l.model ? <small> · {l.model}</small> : null}</span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+        </>
       )}
-      {a.leftAt && (
-        <p className="small muted">{fmtDuration(a.leftAt - a.hiredAt)} de travail{a.tools ? ` · ${plural(a.tools, 'outil utilisé', 'outils utilisés')}` : ''}{a.tokens ? ` · ${a.tokens.toLocaleString('fr-FR')} jetons` : ''}</p>
-      )}
+      {tab === 'brief' && <p className="brief">{prompt ? tidy(prompt) : '—'}</p>}
+      {tab === 'report' && (html ? <div className="md report" dangerouslySetInnerHTML={{ __html: html }} /> : <p className="muted small">Pas encore de rapport.</p>)}
+      {tab === 'files' && (files.length && mission ? <FileActions files={files} missionId={mission.id} disabled={replaying} send={send} /> : <p className="muted small">Aucun fichier rangé par {name}.</p>)}
     </Shell>
   );
+}
+
+function useNow(every: number) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), every); return () => clearInterval(t); }, [every]);
+  return now;
 }
 
 function ActList({ acts }: { acts: ActView[] }) {
@@ -278,21 +367,9 @@ function TeamRoom({ role }: { role?: Role }) {
   const [tab, setTab] = useState<'roles' | 'now' | 'history'>(role ? 'roles' : 'now');
   const team = useOffice(useShallow(teamList));
   const settings = useOffice((s) => s.settings);
-  const history = useOffice((s) => s.teamHistory);
-  const send = useOffice((s) => s.send);
-  const connection = useOffice((s) => s.connection);
-  const [open, setOpen] = useState<string | null>(null);
-  useEffect(() => { if (tab === 'history' && connection === 'live') send({ t: 'team_history' }); }, [tab, connection, send]);
+
   const working = (r: Role) => [...world.actors.values()].filter((a) => a.role === r && a.seated).length;
   const roles: Role[] = POLES;
-  const missions = useMemo(() => {
-    const m = new Map<string, { title: string; at: number; entries: NonNullable<typeof history> }>();
-    for (const e of history ?? []) {
-      if (!m.has(e.missionId)) m.set(e.missionId, { title: e.missionTitle, at: e.at, entries: [] });
-      m.get(e.missionId)!.entries.push(e);
-    }
-    return [...m.entries()];
-  }, [history]);
   return (
     <Shell title="Toute l’équipe" sub="De vrais agents Claude Code, chacun avec son métier et ses outils" wide>
       <div className="seg tabs">
@@ -323,32 +400,46 @@ function TeamRoom({ role }: { role?: Role }) {
           ))}
         </div>
       )}
-      {tab === 'history' && (
-        connection !== 'live' ? <p className="muted">L’historique vit sur ton ordinateur : lance le bureau avec Claude Code pour le voir.</p>
-          : !history ? <p className="muted">Chargement…</p>
-            : !missions.length ? <p className="muted">Pas encore d’historique.</p>
-              : (
-                <div className="hist-team">
-                  {missions.map(([id, m]) => (
-                    <section key={id}>
-                      <h4>{m.title} <span className="count">{fmtDate(m.at)}</span></h4>
-                      {m.entries.map((e) => (
-                        <div key={e.id} className={`hist-row ${e.status}`} style={{ ['--c' as string]: ROLES[e.role].color }}>
-                          <button onClick={() => setOpen(open === e.id ? null : e.id)}>
-                            <Avatar role={e.role} size={22} />
-                            <b>{e.name}</b>
-                            <span>{ROLES[e.role].label} · {e.task}</span>
-                            <em>{e.status === 'done' ? '✓' : e.status === 'failed' ? '✕' : '…'} {e.ms ? fmtDuration(e.ms) : ''}</em>
-                          </button>
-                          {open === e.id && e.report && <div className="md small" dangerouslySetInnerHTML={{ __html: mdToHtml(tidy(e.report)) }} />}
-                        </div>
-                      ))}
-                    </section>
-                  ))}
-                </div>
-              )
-      )}
+      {tab === 'history' && <TeamHistory />}
     </Shell>
+  );
+}
+
+// ── L'historique de toute l'équipe (sur le disque) : recherche et pagination, jamais tout d'un coup ──
+function TeamHistory() {
+  const page = useOffice((s) => s.historyPage);
+  const send = useOffice((s) => s.send);
+  const connection = useOffice((s) => s.connection);
+  const [q, setQ] = useState('');
+  const [p, setP] = useState(0);
+  useEffect(() => {
+    if (connection !== 'live') return;
+    const t = setTimeout(() => send({ t: 'history_search', q, page: p }), q ? 250 : 0);
+    return () => clearTimeout(t);
+  }, [q, p, connection, send]);
+  if (connection !== 'live') return <p className="muted">L’historique vit sur ton ordinateur : lance le bureau avec Claude Code pour le voir.</p>;
+  const pages = page ? Math.max(1, Math.ceil(page.total / 25)) : 1;
+  return (
+    <div className="hist-team">
+      <input className="search" type="search" placeholder="Chercher un agent, un pôle, une demande, « planté »…" value={q} onChange={(e) => { setQ(e.target.value); setP(0); }} aria-label="Chercher dans l’historique" />
+      {!page ? <p className="muted">Chargement…</p> : !page.entries.length ? <p className="muted">Rien trouvé.</p> : (
+        <>
+          <p className="small muted">{plural(page.total, 'passage', 'passages')} d’agents · page {page.page + 1} sur {pages}</p>
+          {page.entries.map((e) => (
+            <button key={`${e.missionId}|${e.id}`} className={`hist-row2 ${e.status}`} style={{ ['--c' as string]: ROLES[e.role]?.color ?? '#999' }} onClick={() => { sfx('open'); useOffice.setState({ modal: { kind: 'agent', id: e.id, missionId: e.missionId } }); }}>
+              <Avatar role={e.role} size={22} />
+              <b>{e.name}</b>
+              <span>{ROLES[e.role]?.label} · {e.task}<small>{e.missionTitle} · {fmtDate(e.at)}{e.model ? ` · ${modelLabel(e.model)}` : ''}{e.switched ? ` (bascule ${e.switched})` : ''}</small></span>
+              <em className={`st-${e.status}`}>{e.status === 'done' ? '✓ Terminé' : e.status === 'crashed' ? '✕ Planté' : '… en cours'}{e.ms ? ` · ${fmtDuration(e.ms)}` : ''}</em>
+            </button>
+          ))}
+          <div className="row pager">
+            <button className="btn small" disabled={p <= 0} onClick={() => setP(p - 1)}>← Plus récents</button>
+            <button className="btn small" disabled={p + 1 >= pages} onClick={() => setP(p + 1)}>Plus anciens →</button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

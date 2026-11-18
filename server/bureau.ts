@@ -18,6 +18,8 @@ import { agentsJson, ALWAYS_ALLOWED, chefPrompt, poleModel, SESSION_TOOLS } from
 import { defaultSettings, mergeSettings, modelFamily, modelLabel, type ModelId } from '../shared/settings.ts';
 import { checkReviewBash, checkReviewWrite } from './policy.ts';
 import { guardDecision } from './guard.ts';
+import { History } from './history.ts';
+import { blockedFor, crashReason, resultError } from './watchdog.ts';
 
 const RULES_FILE = 'Règlement du bureau.md';
 const HOOK_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hook.ts');
@@ -184,6 +186,9 @@ export class Bureau {
   hookUrl = '';
   /** les modèles dont le quota est plein, jusqu'à quand (ms) */
   private limits = new Map<ModelId, number>();
+  /** l'historique des agents, sur le disque */
+  readonly history: History;
+  private histChain: Promise<void> = Promise.resolve();
 
   private claude: ClaudeBinary | null;
   private broadcast: (m: ServerMsg) => void;
@@ -196,6 +201,7 @@ export class Bureau {
     this.stateFile = path.join(this.dir, '.bureau', 'state.json');
     this.recDir = path.join(this.dir, '.bureau', 'missions');
     this.verDir = path.join(this.dir, '.bureau', 'versions');
+    this.history = new History(this.dir);
   }
 
   async init() {
@@ -214,8 +220,10 @@ export class Bureau {
     }
     // une mission restée « au travail » (le bureau a été coupé pendant qu'elle tournait) est arrêtée
     for (const m of this.state.missions) if (m.status === 'working') m.status = 'stopped';
+    await this.history.init(this.settings.follow.keepMonths, this.state.missions, this.recDir).catch((e) => console.error('  ⚠  Historique des agents :', e instanceof Error ? e.message : e));
     await this.restore();
     this.startProbing();
+    setInterval(() => this.watchdog(), 30_000).unref();
   }
 
   claudeInfo(): ClaudeInfo {
@@ -539,7 +547,56 @@ export class Bureau {
     const l = cur.live;
     // des membres de l'équipe travaillent encore : Max reprendra la main quand ils auront rendu leur travail
     if (l && l.norm.present.size > 0 && r.ok && !cur.stopAsked) return;
+    if (!r.ok && !cur.stopAsked && cur.mission.status === 'working') {
+      const e = resultError(r.subtype, r.text);
+      if (e.limit ? this.chefLimited(cur, r.text) : this.chefCrashed(cur, e.reason)) return;
+    }
     this.finish(cur, r.ok, r.text.trim() || cur.lastChefText, r.ms, cur.stopAsked);
+  }
+
+  /**
+   * Le modèle de Max n'a plus de quota : on note la limite, puis on relance sa séance avec son repli
+   * (ou c'est la pause café s'il n'en a pas). Renvoie vrai si c'est pris en charge.
+   */
+  private chefLimited(cur: Current, text: string): boolean {
+    const fam = modelFamily(cur.models.get('chef') ?? '') ?? this.settings.team.chef.model;
+    const q = this.quota;
+    const until = Math.max(q?.resetsAt ? q.resetsAt * 1000 : 0, Date.now() + 15 * 60 * 1000);
+    this.setLimited(fam, until, text.slice(0, 120) || 'limite atteinte');
+    if (poleModel(this.settings, 'chef', this.limited())) { this.restartChef(cur, `Le quota de ${modelLabel(fam)} est plein : tu continues avec ton modèle de repli.`); return true; }
+    this.startPause(cur, until, `☕ Pause café : le quota de ${modelLabel(fam)} est plein et Max n’a pas de repli. L’équipe reprend toute seule ${whenFr(until)}.`);
+    return true;
+  }
+
+  /** Max a planté : selon le réglage, on relance sa séance une fois (elle reprend où elle en était). */
+  private chefCrashed(cur: Current, reason: string): boolean {
+    this.record(cur, { k: 'state', who: 'chef', state: 'crashed', reason });
+    this.notify('crash', `Max a planté : ${reason}`);
+    const policy = this.settings.follow.onCrash;
+    if (policy === 'retry' && !cur.relaunched.has('chef')) {
+      cur.relaunched.add('chef');
+      this.record(cur, { k: 'note', who: 'chef', text: 'Relance automatique (une fois).', level: 'info' });
+      this.restartChef(cur, `Ta séance s’est arrêtée sur une erreur (${reason}).`);
+      return true;
+    }
+    return false;
+  }
+
+  /** Relance la séance de Max (même conversation) et lui dit de reprendre là où il en était. */
+  private restartChef(cur: Current, why: string) {
+    const old = cur.live;
+    if (old) {
+      old.stopping = true;
+      for (const id of old.norm.present) { this.record(cur, { k: 'leave', who: id, ok: false, tokens: 0, tools: 0, ms: 0 }); this.releaseSlot(cur, id); }
+      old.norm.present.clear();
+      cur.live = null;
+      old.proc.kill();
+    }
+    const l = this.spawn(cur);
+    const text = `${why} Reprends exactement là où l’équipe s’était arrêtée, sans refaire ce qui est déjà fait, et mène la demande à son terme.`;
+    l.lastText = text;
+    this.record(cur, { k: 'state', who: 'chef', state: 'working', reason: 'Séance relancée' });
+    l.proc.send(text);
   }
 
   private finish(cur: Current, ok: boolean, text: string, ms: number, stopped: boolean) {
@@ -593,9 +650,14 @@ export class Bureau {
       return;
     }
     if (cur.mission.status === 'working') {
-      const message = failed
-        ? (stderr.split('\n').filter(Boolean).slice(-3).join(' ') || (signal ? `Claude Code s’est arrêté (${signal}).` : `Claude Code s’est arrêté (code ${code}).`))
-        : 'Claude Code s’est arrêté.';
+      const reason = crashReason({ code, signal, stderr, stopping: l.stopping });
+      if (reason && !cur.stopAsked && this.current === cur) {
+        cur.live = l;
+        const handled = /^Limite atteinte/.test(reason) ? this.chefLimited(cur, reason) : this.chefCrashed(cur, reason);
+        if (handled) return;
+        cur.live = null;
+      }
+      const message = reason ?? 'Claude Code s’est arrêté.';
       if (!cur.stopAsked) this.record(cur, { k: 'error', message });
       // les membres de l'équipe encore présents s'en vont
       for (const id of l.norm.present) this.record(cur, { k: 'leave', who: id, ok: false, tokens: 0, tools: 0, ms: 0 });
@@ -613,6 +675,15 @@ export class Bureau {
     cur.log.push({ at, ev });
     if (cur.log.length > MAX_LOG) cur.log.splice(0, cur.log.length - MAX_LOG);
     void appendFile(path.join(this.recDir, `${cur.mission.id}.jsonl`), JSON.stringify({ at, ev }) + '\n').catch(() => {});
+    // l'historique des agents (dans l'ordre : une file d'écriture)
+    const m = cur.mission;
+    this.histChain = this.histChain.then(() => this.history.add(m, ev, at, (w) => cur.models.get(w))).catch(() => {});
+    // un agent noté « bloqué » qui se remet à bouger
+    const who = 'who' in ev && typeof ev.who === 'string' ? ev.who : ev.k === 'hire' ? ev.id : '';
+    if (who && ev.k !== 'state' && ev.k !== 'note' && ev.k !== 'model' && cur.states.get(who) === 'blocked') {
+      cur.states.set(who, 'working');
+      this.record(cur, { k: 'state', who, state: 'working', reason: 'Reprend le travail' });
+    }
   }
 
   // ── Les fichiers produits par l'équipe ──
@@ -850,6 +921,28 @@ export class Bureau {
     this.notify('crash', `${label} a planté : ${reason}`);
     if (policy === 'stop') { this.record(cur, { k: 'note', who, text: 'Demande arrêtée (réglage « Arrêter la demande »).', level: 'error' }); this.stop(); return; }
     if (policy === 'retry' && who !== 'chef' && !cur.relaunched.has(who)) this.relaunch(who, true);
+  }
+
+  /** Toutes les 30 s : un agent sans aucun événement depuis le délai réglé est noté « bloqué ». */
+  private watchdog() {
+    const cur = this.current;
+    const l = cur?.live;
+    if (!cur || !l || cur.mission.status !== 'working') return;
+    const delay = this.settings.follow.blockedMin;
+    const now = Date.now();
+    const waiting = (id: string) => l.norm.pendingRequests().length > 0 && (id === 'chef' || cur.states.get(id) === 'waiting') || cur.states.get(id) === 'queued';
+    const ids = ['chef', ...l.norm.present];
+    for (const id of ids) {
+      // Max attend son équipe : ce n'est pas un blocage tant qu'un agent travaille
+      if (id === 'chef' && l.norm.present.size > 0) continue;
+      const last = Math.max(l.norm.lastSeen.get(id) ?? 0, cur.busySince ?? 0);
+      const min = blockedFor(now, last, delay, waiting(id));
+      if (!min || cur.states.get(id) === 'blocked') continue;
+      cur.states.set(id, 'blocked');
+      const name = id === 'chef' ? 'Max' : (cur.log.find((x) => x.ev.k === 'hire' && x.ev.id === id)?.ev as { name?: string } | undefined)?.name ?? 'Un agent';
+      this.record(cur, { k: 'state', who: id, state: 'blocked', reason: `Bloqué · ${min} min sans aucune action` });
+      this.notify('blocked', `${name} est bloqué depuis ${min} min (« ${cur.mission.title} »).`);
+    }
   }
 
   /** Fait relancer un agent planté par Max, avec la même mission (bouton « Relancer », ou relance automatique). */

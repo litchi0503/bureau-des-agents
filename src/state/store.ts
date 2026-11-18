@@ -6,7 +6,7 @@ import { defaultSettings } from '../../shared/settings.ts';
 import { setPlaces } from '../engine/layout.ts';
 import { world } from '../engine/instance.ts';
 import type {
-  ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, TelegramStatus, VersionInfo, PauseInfo, ProjectInfo,
+  ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, TelegramStatus, VersionInfo, PauseInfo, ProjectInfo, AgentState, HistEntry, HistLine,
 } from '../../shared/protocol.ts';
 import { sfx } from '../audio/sfx.ts';
 import { say } from '../audio/voice.ts';
@@ -32,6 +32,24 @@ export interface AgentView {
   tools: number;
 }
 
+/** Le suivi d'un agent (ou de Max) : son état noté par le bureau, sa frise, son modèle. */
+export interface TrackView {
+  state: AgentState | null;
+  reason: string;
+  stateAt: number;
+  /** les changements d'état, dans l'ordre (la frise de sa fiche) */
+  timeline: { state: AgentState; at: number }[];
+  /** le dernier événement venu de lui */
+  lastAt: number;
+  model: string;
+  effort: string;
+  /** la bascule de modèle (repli), s'il y en a eu une */
+  switched: { from: string; to: string; at: number } | null;
+  crashedAt: number;
+}
+
+export const emptyTrack = (): TrackView => ({ state: null, reason: '', stateAt: 0, timeline: [], lastAt: 0, model: '', effort: '', switched: null, crashedAt: 0 });
+
 export interface ChefView {
   say: string;
   sayAt: number;
@@ -51,7 +69,7 @@ export type Tod = 'auto' | 'day' | 'evening' | 'night';
 
 /** Les fenêtres qu'on ouvre en cliquant sur le bureau (un robot, le tableau, l'horloge…). */
 export type Modal =
-  | { kind: 'agent'; id: string }
+  | { kind: 'agent'; id: string; missionId?: string }
   | { kind: 'board' }
   | { kind: 'clock' }
   | { kind: 'machine' }
@@ -85,6 +103,12 @@ interface S {
   asks: Record<string, AskView>;
   stats: MissionStats;
   feed: FeedLine[];
+  /** le suivi de chacun (clé : « chef » ou l'identifiant de l'agent) */
+  track: Record<string, TrackView>;
+  /** les journaux reçus du serveur (clé : demande|agent) */
+  agentLogs: Record<string, { entry: HistEntry | null; lines: HistLine[] }>;
+  /** la page de l'historique de l'équipe (👥) */
+  historyPage: { q: string; page: number; total: number; entries: HistEntry[] } | null;
   final: { ok: boolean; text: string; ms: number; stopped?: boolean; at: number } | null;
   /** quand l'équipe s'est mise au travail (pour le chrono) ; null = au repos */
   busySince: number | null;
@@ -162,6 +186,9 @@ export const useOffice = create<S>((set, get) => ({
   asks: {},
   stats: emptyStats(),
   feed: [],
+  track: {},
+  agentLogs: {},
+  historyPage: null,
   final: null,
   busySince: null,
   workMs: 0,
@@ -195,7 +222,7 @@ export const useOffice = create<S>((set, get) => ({
   resetMission: (m) => {
     set({
       mission: m, chef: emptyChef(), agents: {}, order: [], plan: [], files: [], asks: {}, stats: emptyStats(),
-      feed: [], final: null, busySince: null, workMs: 0, showFinal: false, planHistory: [],
+      feed: [], final: null, busySince: null, workMs: 0, showFinal: false, planHistory: [], track: {},
     });
     bus.reset();
   },
@@ -239,6 +266,12 @@ export const useOffice = create<S>((set, get) => ({
       case 'team_history':
         set({ teamHistory: m.entries });
         break;
+      case 'agent_log':
+        set({ agentLogs: { ...s.agentLogs, [`${m.missionId}|${m.who}`]: { entry: m.entry, lines: m.lines } } });
+        break;
+      case 'history_page':
+        set({ historyPage: { q: m.q, page: m.page, total: m.total, entries: m.entries } });
+        break;
       case 'quota':
         set({ quota: m.quota });
         break;
@@ -269,6 +302,32 @@ export const useOffice = create<S>((set, get) => ({
       return [...get().feed, line].slice(-MAX_FEED);
     };
     const agentName = (who: string) => (who === 'chef' ? 'Max' : s.agents[who]?.name ?? 'Un agent');
+    // le suivi : le dernier signe de vie, l'état, la frise, le modèle
+    {
+      const who = 'who' in ev && typeof ev.who === 'string' ? ev.who : ev.k === 'hire' ? ev.id : ev.k === 'start' || ev.k === 'end' ? 'chef' : '';
+      if (who) {
+        const t = { ...(s.track[who] ?? emptyTrack()) };
+        const setState = (state: AgentState, reason = '') => {
+          if (t.state !== state) t.timeline = [...t.timeline, { state, at }].slice(-80);
+          t.state = state; t.reason = reason; t.stateAt = at;
+          if (state === 'crashed') t.crashedAt = at;
+        };
+        if (ev.k !== 'state' && ev.k !== 'note' && ev.k !== 'model') t.lastAt = at;
+        if (ev.k === 'state') setState(ev.state, ev.reason ?? '');
+        else if (ev.k === 'model') { t.model = ev.model; t.effort = ev.effort; if (ev.from) t.switched = { from: ev.from, to: ev.model, at }; }
+        else if (ev.k === 'hire' || ev.k === 'start') setState('working');
+        else if (ev.k === 'ask') setState('waiting', ev.label);
+        else if (ev.k === 'leave') setState(ev.ok ? 'done' : 'crashed', ev.ok ? '' : t.reason || 'N’a pas pu finir');
+        else if (ev.k === 'end') setState(ev.ok || ev.stopped ? 'done' : 'crashed', ev.ok ? '' : ev.stopped ? 'Demande arrêtée' : 'La demande s’est mal terminée');
+        else if ((t.state === 'blocked' || t.state === 'waiting') && (ev.k === 'act' || ev.k === 'say' || ev.k === 'typing' || ev.k === 'report')) setState('working');
+        set({ track: { ...get().track, [who]: t } });
+      }
+      if (ev.k === 'ask_done') {
+        const ask = s.asks[ev.requestId];
+        const t = ask && s.track[ask.who];
+        if (t && t.state === 'waiting') set({ track: { ...get().track, [ask.who]: { ...t, state: 'working', reason: '', timeline: [...t.timeline, { state: 'working' as AgentState, at }] } } });
+      }
+    }
     switch (ev.k) {
       case 'start': {
         const first = s.feed.length === 0;
@@ -376,6 +435,16 @@ export const useOffice = create<S>((set, get) => ({
       case 'error':
         set({ feed: feed('Max', ev.message, 'error') });
         if (live) get().toast('error', ev.message);
+        break;
+      case 'note':
+        set({ feed: feed(agentName(ev.who), ev.text, ev.level === 'info' ? 'act' : 'error') });
+        break;
+      case 'state':
+        if (ev.state === 'crashed' || ev.state === 'blocked') set({ feed: feed(agentName(ev.who), ev.reason || (ev.state === 'crashed' ? 'a planté' : 'est bloqué'), 'error') });
+        if (live && ev.state === 'crashed') sfx('error');
+        break;
+      case 'model':
+        if (ev.from) set({ feed: feed(agentName(ev.who), `passe de ${ev.from} à ${ev.model}${ev.reason ? ` (${ev.reason})` : ''}`, 'act') });
         break;
     }
     bus.emit(ev, live);
