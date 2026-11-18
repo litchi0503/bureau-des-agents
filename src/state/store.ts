@@ -6,7 +6,7 @@ import { defaultSettings } from '../../shared/settings.ts';
 import { setPlaces } from '../engine/layout.ts';
 import { world } from '../engine/instance.ts';
 import type {
-  ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, TelegramStatus, VersionInfo, PauseInfo, ProjectInfo, AgentState, HistEntry, HistLine,
+  ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, TelegramStatus, VersionInfo, PauseInfo, ProjectInfo, AgentState, HistEntry, HistLine, CarnetInfo,
 } from '../../shared/protocol.ts';
 import { sfx } from '../audio/sfx.ts';
 import { say } from '../audio/voice.ts';
@@ -76,7 +76,10 @@ export type Modal =
   | { kind: 'jukebox' }
   | { kind: 'team'; role?: Role }
   | { kind: 'files' }
-  | { kind: 'preview'; missionId: string; file: string };
+  | { kind: 'preview'; missionId: string; file: string }
+  | { kind: 'projects'; id?: string }
+  | { kind: 'carnet'; projectId: string }
+  | { kind: 'telegram' };
 
 interface S {
   connection: 'connecting' | 'live' | 'offline' | 'demo';
@@ -91,6 +94,9 @@ interface S {
   projects: ProjectInfo[];
   /** le projet choisi pour la prochaine demande ('' = un nouveau dossier de demande) */
   projectId: string;
+  /** le dossier parcouru par « Choisir… » */
+  browse: { path: string; parent: string | null; dirs: string[] } | null;
+  carnet: CarnetInfo | null;
   missions: MissionInfo[];
   mission: MissionInfo | null;
   /** vrai pendant une rediffusion (ou la démo) */
@@ -175,6 +181,8 @@ export const useOffice = create<S>((set, get) => ({
   pause: null,
   projects: [],
   projectId: pref('projectId', ''),
+  browse: null,
+  carnet: null,
   missions: [],
   mission: null,
   replaying: false,
@@ -231,7 +239,7 @@ export const useOffice = create<S>((set, get) => ({
     const s = get();
     switch (m.t) {
       case 'hello': {
-        set({ claude: m.claude, dir: m.dir, settings: m.settings, quota: m.quota, missions: m.missions, pause: m.pause ?? null });
+        set({ claude: m.claude, dir: m.dir, settings: m.settings, quota: m.quota, missions: m.missions, pause: m.pause ?? null, projects: m.projects ?? [] });
         world.setPause(!!m.pause);
         placesFrom(m.settings);
         if (s.replaying) break;
@@ -268,6 +276,15 @@ export const useOffice = create<S>((set, get) => ({
         break;
       case 'agent_log':
         set({ agentLogs: { ...s.agentLogs, [`${m.missionId}|${m.who}`]: { entry: m.entry, lines: m.lines } } });
+        break;
+      case 'projects':
+        set({ projects: m.list });
+        break;
+      case 'browse':
+        set({ browse: { path: m.path, parent: m.parent, dirs: m.dirs } });
+        break;
+      case 'carnet':
+        set({ carnet: m.carnet });
         break;
       case 'history_page':
         set({ historyPage: { q: m.q, page: m.page, total: m.total, entries: m.entries } });

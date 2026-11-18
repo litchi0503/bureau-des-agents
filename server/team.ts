@@ -132,6 +132,10 @@ export interface ProjectBrief {
   dirty: string | null;
   /** le chemin où ranger la carte (hors du dépôt) */
   mapPath: string;
+  /** le dossier de la demande, où vont les rendus (cahier des charges, maquettes, revue, rapport) */
+  deliverDir: string;
+  /** le numéro de la demande dans le carnet (D-001…) */
+  requestId: string;
 }
 
 function projectPart(p: ProjectBrief): string {
@@ -140,6 +144,7 @@ function projectPart(p: ProjectBrief): string {
       : `Code + push : l'équipe modifie le code sur la branche ${p.branch}, tu commites et tu pousses cette branche (git push -u origin ${p.branch}). Merge vers ${p.base} seulement si lint, typage, tests et build sont verts${p.commands.find((c) => c.name === 'Merge') ? `, avec le script de merge du projet` : ''}.`;
   return `
 ## Le projet « ${p.name} » (tu travailles dans son dossier)
+- Cette demande : ${p.requestId}. Les rendus (cahier des charges, maquettes, revue, rapport) vont dans le dossier de la demande : ${p.deliverDir} (le code, lui, reste dans le dépôt). L'équipe ne sort jamais du dépôt ni de ces dossiers.
 - Accès : ${access}
 - Git : la branche de travail ${p.branch} est déjà créée depuis ${p.base}. Branches interdites (jamais de commit, de push ni de merge dessus) : ${p.forbidden.join(', ') || 'aucune'}. Jamais de push --force, de reset --hard, de rebase ni de réécriture d'historique : le bureau les refuse.
 - L'auteur des commits est celui du dépôt (git config) : n'y touche pas.

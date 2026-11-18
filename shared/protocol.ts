@@ -172,6 +172,28 @@ export interface ProjectInfo {
   missionId?: string;
 }
 
+/** Une ligne du carnet de Max. */
+export interface BacklogRow { id: string; title: string; step: string; state: string; wait: string }
+
+/** Le carnet d'un projet, tel que l'écran « Carnet » l'affiche. */
+export interface CarnetInfo {
+  projectId: string;
+  /** le fichier, tel qu'on peut l'afficher (relatif au dépôt, ou dans le dossier du bureau) */
+  file: string;
+  external: boolean;
+  /** null = pas de tableau lisible (on montre le texte tel quel) */
+  rows: BacklogRow[] | null;
+  raw: string;
+  /** la demande en cours sur ce projet */
+  current: { id: string; title: string; step: string; missionId: string; working: boolean } | null;
+  /** « Max a N questions » (dans son dernier message) */
+  questions: number;
+  /** les sessions de test qui t'attendent */
+  tests: number;
+  /** la dernière chose que Max demande de valider */
+  toValidate: string;
+}
+
 /** La pause café en cours : quelle demande, et quand elle reprend (ms). */
 export interface PauseInfo { missionId: string; resumeAt: number }
 
@@ -196,12 +218,24 @@ export type ClientMsg =
   /** le journal d'un agent (sa fiche), et une page de l'historique de l'équipe (👥) */
   | { t: 'agent_log'; missionId: string; who: string }
   | { t: 'history_search'; q: string; page: number }
+  /** les projets, le choix d'un dossier, le carnet */
+  | { t: 'projects' }
+  | { t: 'project_add'; path: string }
+  | { t: 'project_update'; id: string; patch: Partial<ProjectInfo> }
+  | { t: 'project_remove'; id: string }
+  | { t: 'browse'; path: string }
+  | { t: 'carnet'; projectId: string }
+  | { t: 'carnet_add'; projectId: string; text: string }
+  | { t: 'carnet_launch'; projectId: string; id: string }
+  | { t: 'map_update'; projectId: string }
+  /** les boutons « Valider » et « Modifier » (cahier des charges, plan, maquette) */
+  | { t: 'validate'; ok: boolean; text?: string }
   /** relancer un agent planté (bouton « Relancer » de sa fiche) */
   | { t: 'relaunch'; who: string };
 
 // ── Serveur → navigateur ──
 export type ServerMsg =
-  | { t: 'hello'; claude: ClaudeInfo; dir: string; settings: Settings; quota: Quota | null; missions: MissionInfo[]; current: { mission: MissionInfo; log: Logged[] } | null; build?: string; pause: PauseInfo | null }
+  | { t: 'hello'; claude: ClaudeInfo; dir: string; settings: Settings; quota: Quota | null; missions: MissionInfo[]; current: { mission: MissionInfo; log: Logged[] } | null; build?: string; pause: PauseInfo | null; projects: ProjectInfo[] }
   | { t: 'pause'; pause: PauseInfo | null }
   | { t: 'mission'; mission: MissionInfo }
   | { t: 'ev'; missionId: string; at: number; ev: OfficeEvent }
@@ -215,4 +249,7 @@ export type ServerMsg =
   | { t: 'telegram'; status: TelegramStatus }
   | { t: 'agent_log'; missionId: string; who: string; entry: HistEntry | null; lines: HistLine[] }
   | { t: 'history_page'; q: string; page: number; total: number; entries: HistEntry[] }
+  | { t: 'projects'; list: ProjectInfo[] }
+  | { t: 'browse'; path: string; parent: string | null; dirs: string[] }
+  | { t: 'carnet'; carnet: CarnetInfo }
   | { t: 'toast'; kind: 'info' | 'error'; text: string };

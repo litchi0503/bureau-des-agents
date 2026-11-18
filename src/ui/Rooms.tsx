@@ -6,6 +6,8 @@ import { POLES, ROLE_TOOLS, ROLES, TOOL_INFO } from '../../shared/activity.ts';
 import { effortLabel, modelLabel } from '../../shared/settings.ts';
 import type { HistLine } from '../../shared/protocol.ts';
 import { PASTILLE } from './pastille.ts';
+import { CarnetRoom, ProjectsRoom } from './Projects.tsx';
+import { TelegramRoom } from './Telegram.tsx';
 import type { PlanItem, Role } from '../../shared/protocol.ts';
 import { jukebox, TRACKS } from '../audio/music.ts';
 import { sfx } from '../audio/sfx.ts';
@@ -50,6 +52,9 @@ export function Rooms() {
     case 'team': return <TeamRoom role={modal.role} />;
     case 'files': return <FilesRoom />;
     case 'preview': return <PreviewRoom missionId={modal.missionId} file={modal.file} />;
+    case 'projects': return <ProjectsRoom id={modal.id} />;
+    case 'carnet': return <CarnetRoom projectId={modal.projectId} />;
+    case 'telegram': return <TelegramRoom />;
   }
 }
 

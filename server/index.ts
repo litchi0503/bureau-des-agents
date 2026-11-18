@@ -208,6 +208,40 @@ async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
       send({ t: 'history_page', q, page, ...bureau.history.search(q, page) });
       break;
     }
+    case 'projects':
+      send({ t: 'projects', list: await bureau.projectList() });
+      break;
+    case 'project_add':
+      await bureau.addProject(str(m.path, 1000));
+      break;
+    case 'project_update':
+      await bureau.updateProject(str(m.id, 40), m.patch && typeof m.patch === 'object' ? m.patch : {});
+      break;
+    case 'project_remove':
+      await bureau.removeProject(str(m.id, 40));
+      break;
+    case 'browse':
+      send({ t: 'browse', ...(await bureau.browse(str(m.path, 1000))) });
+      break;
+    case 'carnet':
+      send({ t: 'carnet', carnet: await bureau.carnet(str(m.projectId, 40)) });
+      break;
+    case 'carnet_add': {
+      const p = bureau.project(str(m.projectId, 40));
+      if (!p) throw new Error('Ce projet n’existe plus.');
+      await bureau.start(str(m.text), { projectId: p.id });
+      send({ t: 'carnet', carnet: await bureau.carnet(p.id) });
+      break;
+    }
+    case 'carnet_launch':
+      await bureau.carnetLaunch(str(m.projectId, 40), str(m.id, 20));
+      break;
+    case 'map_update':
+      await bureau.start('Mets à jour la carte du projet (à partir du diff depuis son commit, ou fais-la si elle n’existe pas). Rien d’autre.', { projectId: str(m.projectId, 40) });
+      break;
+    case 'validate':
+      bureau.say(m.ok ? 'Valider' : `Modifier : ${str(m.text, 4000)}`);
+      break;
     case 'relaunch':
       bureau.relaunch(str(m.who, 100));
       break;

@@ -72,6 +72,7 @@ function Welcome() {
           <div className="row">
             <button className="btn small" onClick={() => send({ t: 'open_root' })}>Ouvrir le dossier</button>
             <button className="btn small" onClick={() => send({ t: 'open_root', rules: true })}>Le règlement du bureau</button>
+            <button className="btn small" onClick={() => { sfx('open'); useOffice.setState({ modal: { kind: 'projects' } }); }}>📂 Projets</button>
           </div>
           <p className="small muted">Le règlement, c’est ce que l’équipe doit savoir sur toi : Max le lit avant chaque mission.</p>
         </section>
