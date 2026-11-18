@@ -5,7 +5,6 @@
 //   node server/index.ts            le bureau sur http://localhost:4848
 //   node server/index.ts --open     … et l'ouvre dans le navigateur
 //   node server/index.ts --dev      seulement le pont (le bureau est servi par Vite, port 5174)
-import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -15,6 +14,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMsg, ServerMsg } from '../shared/protocol.ts';
 import { Bureau } from './bureau.ts';
 import { findClaude } from './claude.ts';
+import { openPath } from './opener.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
@@ -232,8 +232,7 @@ function listen(port: number) {
     console.log('  ⏹  Pour arrêter : Ctrl + C');
     console.log('');
     if (args.has('--open') && !DEV) {
-      const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-      execFile(opener, [url], () => {});
+      openPath(url);
     }
   });
 }

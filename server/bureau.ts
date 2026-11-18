@@ -19,6 +19,7 @@ import { defaultSettings, mergeSettings, modelFamily, modelLabel, type ModelId }
 import { checkReviewBash, checkReviewWrite } from './policy.ts';
 import { guardDecision } from './guard.ts';
 import { History } from './history.ts';
+import { openPath } from './opener.ts';
 import { blockedFor, crashReason, resultError } from './watchdog.ts';
 
 const RULES_FILE = 'Règlement du bureau.md';
@@ -1013,16 +1014,14 @@ export class Bureau {
   /** Ouvre le dossier de la mission (ou un de ses fichiers) avec l'appli par défaut. */
   open(missionId: string, file?: string) {
     const { target } = this.inside(missionId, file);
-    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-    execFile(opener, [target], () => {});
+    openPath(target);
   }
 
   /** Ouvre le dossier du bureau, ou son règlement (dans l'éditeur de texte par défaut). */
   openRoot(rules: boolean) {
     const target = rules ? path.join(this.dir, RULES_FILE) : this.dir;
     if (rules && !existsSync(target)) writeFileSync(target, RULES_TEMPLATE);
-    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-    execFile(opener, rules && process.platform === 'darwin' ? ['-t', target] : [target], () => {});
+    openPath(target, { textEditor: rules });
   }
 
   /** Le texte d'un rendu (rapport, CSV…), pour le lire dans le bureau. */
