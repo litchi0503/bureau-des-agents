@@ -16,13 +16,13 @@ Branche : `bureau/reglages-suivi` (partie de `reprise/garde-fou-existant`).
 
 ## Étapes
 
-1. Les 6 pôles (rôles, consignes, plan du bureau, anciennes missions) : à faire
-2. Onglet Équipe : à faire
-3. Onglet Garde-fou : à faire
-4. Onglet Suivi, pastilles, historique : à faire
-5. WSL : à faire
-6. Projets : à faire
-7. Carnet de Max : à faire
-8. Telegram : à faire
-9. Économie de tokens : à faire
+1. Les 6 pôles : fait
+2. Onglet Équipe : fait
+3. Onglet Garde-fou : fait
+4. Onglet Suivi, pastilles, historique : fait
+5. WSL : fait
+6. Projets : fait
+7. Carnet de Max : fait
+8. Telegram : fait
+9. Économie de tokens : fait
 10. Vérifications réelles : à faire

@@ -7,7 +7,8 @@ Lis ce fichier avant de modifier le code. Pour installer et lancer le bureau, su
 
 - `npm start` : vérifie Node, construit le client, lance le serveur sur http://localhost:4848 et ouvre le navigateur.
 - `npm run dev` : serveur + Vite avec rechargement à chaud sur http://localhost:5174.
-- `npm run check` : les types (client et serveur). `npm run build` : la construction. Les deux doivent passer avant une pull request.
+- `npm run check` : les types (client et serveur). `npm run build` : la construction. `npm test` : les tests (`node --test`, dossier
+  `test/`). Les trois doivent passer avant une pull request.
 - Variables utiles : `PORT` (le port du serveur), `BUREAU_DIR` (le dossier du bureau, par défaut `~/Documents/Bureau des agents`).
 
 Node 22.18 ou plus récent exécute directement le TypeScript du serveur (suppression des types) : dans `server/` et `shared/`, les imports
@@ -15,8 +16,13 @@ gardent l'extension `.ts`, et rien qui demande une vraie compilation (pas d'`enu
 
 ## Comment c'est fait
 
-- **`server/`** : `index.ts` (HTTP, WebSocket, sécurité), `bureau.ts` (les missions, les fichiers, les versions, l'historique),
-  `claude.ts` (lance `claude -p` en stream-json et traduit sa sortie en événements du bureau), `team.ts` (les métiers et les consignes).
+- **`server/`** : `index.ts` (HTTP, WebSocket, sécurité, route `/hook`), `bureau.ts` (les missions, les fichiers, les versions, les places,
+  le garde-fou, les projets), `claude.ts` (lance `claude -p` en stream-json et traduit sa sortie en événements du bureau), `team.ts`
+  (les six pôles et les consignes de Max : partie fixe en tête, pour le cache de prompt), `hook.ts` (le hook PreToolUse, relié au
+  serveur par un jeton), `policy.ts` (interdits git, Relecture, lecture seule), `guard.ts` (la règle du garde-fou), `watchdog.ts`
+  (bloqué, planté), `history.ts` (l'historique des agents sur disque), `projects.ts` et `backlog.ts` (projets, carte, carnet),
+  `telegram.ts`, `opener.ts` (ouvrir un dossier, WSL compris).
+- **`shared/settings.ts`** : les réglages (équipe, préréglages, garde-fou, suivi), partagés par le serveur et le navigateur.
 - **`shared/protocol.ts`** : tous les messages entre le serveur et le navigateur, et les événements (`OfficeEvent`) : `start`, `hire`,
   `act`, `report`, `leave`, `file`, `ask`, `end`… **`shared/activity.ts`** : les métiers, leurs outils, les textes affichés.
 - **`src/state/store.ts`** (zustand) range chaque événement, puis le transmet au moteur (`src/state/bus.ts` → `src/engine/world.ts`).
@@ -34,6 +40,13 @@ Une mission enregistrée se rejoue à l'identique (`H`, puis « Rejouer »), et 
 navigateur, `window.__bureau` donne accès au store, au monde, à la caméra et à `playReplay(mission, log, vitesse)`.
 Pour filmer le bureau image par image (un script de capture qui pilote l'horloge), `window.__CAPTURE` fait dessiner chaque image et
 fournit le rythme de la musique (voir la boucle de `Office.tsx`).
+
+## Ce que Claude Code permet vraiment (vérifié sur 2.1.327)
+
+- `--agents` : `model` et `effort` par sous-agent ; l'outil `Agent` accepte aussi `model` et `effort` à chaque appel.
+- Les hooks passés par `--settings` restent actifs en `--restricted` ; un hook PreToolUse reçoit `agent_type` et `agent_id` pour les
+  appels d'un sous-agent, peut modifier l'appel (`updatedInput`) ou le refuser (code 2), et un hook qui attend ne bloque pas les autres.
+- Les limites propres à un modèle arrivent dans `rate_limit_event` (`rateLimitType` : `seven_day_opus`, `seven_day_sonnet`).
 
 ## Les règles
 
