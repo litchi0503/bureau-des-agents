@@ -1,7 +1,8 @@
 // La connexion au pont (le serveur local qui pilote Claude Code). Sans pont (site public, téléphone),
 // le bureau passe en démo : il rejoue une vraie mission enregistrée.
+import { setPlaces } from '../engine/layout.ts';
 import type { ClientMsg, Logged, MissionInfo, ServerMsg } from '../../shared/protocol.ts';
-import { useOffice } from '../state/store.ts';
+import { placesFrom, useOffice } from '../state/store.ts';
 
 let ws: WebSocket | null = null;
 let everConnected = false;
@@ -58,6 +59,8 @@ export function playReplay(mission: MissionInfo, log: Logged[], speed = 1, opts:
   lastReplay = { mission, log };
   const st = useOffice.getState();
   useOffice.setState({ replaying: true });
+  // une mission enregistrée a pu appeler plus d'agents que les places d'aujourd'hui : en rediffusion, chaque îlot a ses 3 chaises
+  setPlaces({ recherche: 3, design: 3, code: 3, relecture: 3, redaction: 3 });
   st.resetMission({ ...mission, status: 'working' });
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -96,6 +99,7 @@ export function stopReplay() {
   player?.stop();
   player = null;
   useOffice.setState({ replaying: false });
+  placesFrom(useOffice.getState().settings);
   if (ws?.readyState === WebSocket.OPEN) {
     // on redemande l'état du bureau : le plus simple est de se reconnecter
     ws.close();

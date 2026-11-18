@@ -91,7 +91,7 @@ export class History {
         prompt: cut(ev.prompt, 2000), at, status: 'working',
       });
     }
-    if (!this.entries.has(`${m.id}|chef`) && ev.k === 'start') {
+    if (!this.entries.has(`${m.id}|chef`) && (ev.k === 'start' || (ev.k === 'model' && ev.who === 'chef'))) {
       this.entries.set(`${m.id}|chef`, { missionId: m.id, missionTitle: m.title, projectId: m.projectId, id: 'chef', name: 'Max', role: 'chef', task: m.title, prompt: cut(m.prompt, 2000), at, status: 'working' });
     }
     const touched = new Set<string>();

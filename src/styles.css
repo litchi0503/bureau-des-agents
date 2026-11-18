@@ -830,3 +830,4 @@ input.mini { height: 28px !important; width: 120px; border-radius: 999px !import
 .tg-ok { color: var(--green); font-weight: 700; }
 .tg-err { color: #ffb0b0; font-size: 13px; }
 @media (max-width: 640px) { .tg-wiz { grid-template-columns: 1fr; } .tg-steps { border-right: 0; border-bottom: 1px solid var(--line); } .tg-help div { grid-template-columns: 1fr; } }
+@media (max-width: 1440px) { .icon-btn.txt { width: auto; padding: 0 8px; } .icon-btn.txt span { display: none; } }

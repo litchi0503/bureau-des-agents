@@ -15,6 +15,7 @@ import { tilde } from './format.ts';
 type Tab = 'team' | 'guard' | 'follow' | 'show';
 const TABS: [Tab, string][] = [['team', 'Équipe'], ['guard', 'Garde-fou'], ['follow', 'Suivi'], ['show', 'Spectacle']];
 
+const INI: Record<Pole, string> = { chef: 'M', recherche: 'R', design: 'D', code: 'C', relecture: 'L', redaction: 'É' };
 const ROLE_SUB: Record<Pole, string> = {
   chef: 'Chef et plan technique', recherche: 'Client, concurrents, docs', design: 'Maquettes, charte',
   code: 'Développement', relecture: 'Tests, comparaison maquette', redaction: 'Cahier des charges, docs',
@@ -75,7 +76,7 @@ function TeamTab({ draft, setDraft }: TabProps) {
           return (
             <div key={p} className="tt-row" role="row">
               <div className="tt-pole">
-                <span className="tt-ini" style={{ background: ROLES[p].color }} aria-hidden="true">{ROLES[p].label[0]}</span>
+                <span className="tt-ini" style={{ background: ROLES[p].color }} aria-hidden="true">{INI[p]}</span>
                 <span><b>{ROLES[p].label}</b><small>{ROLE_SUB[p]}</small></span>
               </div>
               <select aria-label={`Modèle de ${ROLES[p].label}`} value={c.model} onChange={(e) => setPole(p, { model: e.target.value as ModelId })}>

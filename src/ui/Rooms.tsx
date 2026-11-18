@@ -379,7 +379,7 @@ function TeamRoom({ role }: { role?: Role }) {
     <Shell title="Toute l’équipe" sub="De vrais agents Claude Code, chacun avec son métier et ses outils" wide>
       <div className="seg tabs">
         <button className={tab === 'now' ? 'on' : ''} onClick={() => setTab('now')}>Cette mission</button>
-        <button className={tab === 'roles' ? 'on' : ''} onClick={() => setTab('roles')}>Les métiers</button>
+        <button className={tab === 'roles' ? 'on' : ''} onClick={() => setTab('roles')}>Les pôles</button>
         <button className={tab === 'history' ? 'on' : ''} onClick={() => setTab('history')}>L’historique</button>
       </div>
       {tab === 'now' && (team.length ? (

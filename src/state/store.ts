@@ -158,7 +158,7 @@ const pref = <T,>(key: string, fallback: T): T => {
 export const savePref = (key: string, v: unknown) => { try { localStorage.setItem('bureau:' + key, JSON.stringify(v)); } catch { /* navigation privée */ } };
 
 /** Autant de chaises que de places, dans le bureau. */
-function placesFrom(s: Settings) {
+export function placesFrom(s: Settings) {
   if (!s?.team) return;
   setPlaces({ recherche: s.team.recherche.places, design: s.team.design.places, code: s.team.code.places, relecture: s.team.relecture.places, redaction: s.team.redaction.places });
 }

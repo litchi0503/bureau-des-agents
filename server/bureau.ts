@@ -477,7 +477,8 @@ export class Bureau {
       for (const n of brief.notes) this.record(cur, { k: 'note', who: 'chef', text: n, level: 'info' });
       void this.sendProjects();
     }
-    this.say(brief ? `[Demande ${brief.requestId}] ${text}` : text);
+    const mapHint = brief?.diffSince ? ' (Étape 0 : la carte du projet date d’un ancien commit, mets-la à jour à partir du diff de tes consignes.)' : brief && !brief.map ? ' (Étape 0 : il n’y a pas encore de carte du projet.)' : '';
+    this.say(brief ? `[Demande ${brief.requestId}]${mapHint} ${text}` : text);
   }
 
   /** Parler à Max : la mission, puis les retouches. S'il s'était endormi, il reprend sa séance. */
@@ -569,7 +570,11 @@ export class Bureau {
     if (ev.k === 'leave') {
       this.releaseSlot(cur, ev.who);
       cur.states.set(ev.who, ev.ok ? 'done' : 'crashed');
-      if (!ev.ok) this.onAgentCrash(cur, ev.who, 'L’agent s’est arrêté sur une erreur.');
+      if (!ev.ok) {
+        // la raison : ce que l'agent (ou Claude Code) a rendu en dernier, s'il y a quelque chose
+        const last = [...cur.log].reverse().find((l) => l.ev.k === 'report' && l.ev.who === ev.who)?.ev as { text?: string } | undefined;
+        this.onAgentCrash(cur, ev.who, last?.text ? last.text.replace(/\s+/g, ' ').slice(0, 200) : 'L’agent s’est arrêté sur une erreur.');
+      }
     }
     if (ev.k === 'hire' || ev.k === 'init') this.save();
   }
@@ -1255,6 +1260,14 @@ export class Bureau {
   close() {
     const cur = this.current;
     if (!cur) return;
+    // une demande de projet rangée avant la fin : « En pause » dans le carnet du bureau (Max la reprendra plus tard)
+    const proj = cur.mission.projectId ? this.project(cur.mission.projectId) : null;
+    if (proj && !proj.backlogFile && cur.brief?.requestId) {
+      const f = this.carnetFile(proj);
+      const raw = existsSync(f.abs) ? readFileSync(f.abs, 'utf8') : '';
+      const row = parseBacklog(raw)?.find((r) => r.id === cur.brief!.requestId);
+      if (row && /en cours/i.test(row.state)) writeFileSync(f.abs, setRow(raw, row.id, { state: 'En pause' }));
+    }
     if (cur.mission.status === 'working') { cur.stopAsked = true; this.finish(cur, false, cur.lastChefText, 0, true); }
     if (cur.idleTimer) clearTimeout(cur.idleTimer);
     for (const t of cur.fileTimers.values()) clearTimeout(t);
