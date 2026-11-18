@@ -100,12 +100,20 @@ export function TopBar() {
       )}
 
       <div className="tools">
-        {quota && (
-          <span className="energy" title={`Ton abonnement sur 5 heures : ${Math.round(quota.fiveHour * 100)} % utilisés`}>
-            <span className="energy-label">Énergie</span>
-            <span className="energy-bar"><i style={{ width: `${Math.max(3, 100 - quota.fiveHour * 100)}%` }} /></span>
-          </span>
-        )}
+        <span className="energy" title="Ton abonnement Claude : la part déjà utilisée sur 5 heures et sur la semaine (mesurée pendant les missions).">
+          <span className="energy-label">Énergie</span>
+          {([['5 h', quota?.fiveHour, quota?.resetsAt], ['Sem.', quota?.sevenDay, quota?.sevenDayResetsAt]] as const).map(([name, raw, resetsAt]) => {
+            // une fenêtre déjà rechargée est à 0 %
+            const used = raw === undefined ? null : resetsAt && Date.now() > resetsAt * 1000 ? 0 : raw;
+            return (
+              <span key={name} className="energy-label" title={used === null ? `${name} : pas encore mesurée` : `${name} : ${Math.round(used * 100)} % utilisés`}>
+                {name}
+                <span className="energy-bar"><i style={{ width: `${used === null ? 0 : Math.min(100, Math.max(3, used * 100))}%` }} /></span>
+                {used === null ? '—' : `${Math.round(used * 100)} %`}
+              </span>
+            );
+          })}
+        </span>
         <button className="icon-btn" title="Visite guidée : Max présente son bureau (T)" onClick={() => void startTour()}>🎤</button>
         <button className="icon-btn" title="Toute l’équipe : les métiers, leurs outils, l’historique" onClick={() => { sfx('open'); useOffice.setState({ modal: { kind: 'team' } }); }}>👥</button>
         <button className={`icon-btn ${musicOn ? 'on' : ''}`} title="Le jukebox (J)" onClick={() => { sfx('open'); useOffice.setState({ modal: { kind: 'jukebox' } }); }}>{musicOn ? '🎶' : '🎵'}</button>

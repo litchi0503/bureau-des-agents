@@ -55,6 +55,16 @@ export interface ProcessOptions {
 
 type Json = Record<string, any>;
 
+/** L'énergie de l'abonnement (5 h, semaine) lue dans un « rate_limit_event » de Claude Code. */
+export function quotaFromEvent(m: Json): Partial<Quota> {
+  const w = m.rate_limit_info?.unifiedWindows ?? {};
+  const part: Partial<Quota> = {};
+  if (w.five_hour) { part.fiveHour = Number(w.five_hour.utilization ?? 0); part.resetsAt = Number(w.five_hour.resetsAt ?? 0) || null; }
+  const week = w.seven_day ?? Object.entries(w).find(([k]) => /seven|week/i.test(k))?.[1] as Json | undefined;
+  if (week) { part.sevenDay = Number(week.utilization ?? 0); part.sevenDayResetsAt = Number(week.resetsAt ?? 0) || null; }
+  return part;
+}
+
 /** Le processus Claude Code d'une mission. */
 export class ClaudeProcess {
   private proc: ChildProcessWithoutNullStreams | null = null;
@@ -184,13 +194,13 @@ export class Normalizer {
   sessionId = '';
 
   private emit: (ev: OfficeEvent) => void;
-  private onQuota: (q: Quota) => void;
+  private onQuota: (q: Partial<Quota>) => void;
   private onResult: (r: TurnResult) => void;
   private folder: string;
   /** les prénoms déjà pris dans cette mission (partagés entre les reprises) */
   private names: Set<string>;
 
-  constructor(opts: { emit: (ev: OfficeEvent) => void; onQuota: (q: Quota) => void; onResult: (r: TurnResult) => void; folder: string; names: Set<string> }) {
+  constructor(opts: { emit: (ev: OfficeEvent) => void; onQuota: (q: Partial<Quota>) => void; onResult: (r: TurnResult) => void; folder: string; names: Set<string> }) {
     this.emit = opts.emit;
     this.onQuota = opts.onQuota;
     this.onResult = opts.onResult;
@@ -221,8 +231,8 @@ export class Normalizer {
         this.onResult({ ok: !m.is_error && m.subtype === 'success', text: String(m.result ?? ''), ms: Number(m.duration_ms ?? 0), subtype: String(m.subtype ?? '') });
         break;
       case 'rate_limit_event': {
-        const w = m.rate_limit_info?.unifiedWindows ?? {};
-        if (w.five_hour) this.onQuota({ fiveHour: Number(w.five_hour.utilization ?? 0), resetsAt: Number(w.five_hour.resetsAt ?? 0) || null });
+        const part = quotaFromEvent(m);
+        if (Object.keys(part).length) this.onQuota(part);
         break;
       }
       case 'control_request': {

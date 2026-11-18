@@ -94,7 +94,8 @@ export interface Settings {
   permission: 'auto' | 'ask';
 }
 
-export interface Quota { fiveHour: number; resetsAt: number | null }
+/** L'énergie de l'abonnement : part utilisée (0-1) de la fenêtre de 5 h et de celle de la semaine, et leur recharge (secondes). */
+export interface Quota { fiveHour: number; resetsAt: number | null; sevenDay?: number; sevenDayResetsAt?: number | null }
 
 // ── Navigateur → serveur ──
 export type ClientMsg =
