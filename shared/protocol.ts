@@ -40,6 +40,12 @@ export interface MissionInfo {
   files: FileInfo[];
   /** le dernier message du chef, une fois la mission rendue */
   final?: string;
+  /** « Ignorer le garde-fou pour cette demande » (avec confirmation) */
+  bypass?: boolean;
+  /** le projet (dossier existant) sur lequel travaille la demande */
+  projectId?: string;
+  /** la branche de travail de la demande (bureau/…) */
+  branch?: string;
 }
 
 /**
@@ -113,12 +119,44 @@ export interface Quota {
   models?: Record<string, { used: number; resetsAt: number | null }>;
 }
 
+/** Un projet : un dossier existant (souvent un dépôt git) dans lequel l'équipe travaille. */
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  /** le dossier du projet, sur ton ordinateur */
+  path: string;
+  /** read = lecture seule ; branch = code sur une branche (commits locaux) ; push = code + push */
+  access: 'read' | 'branch' | 'push';
+  /** la branche de base (dev si elle existe, sinon main) */
+  base: string;
+  /** les branches où l'équipe ne commite, ne pousse et ne merge jamais */
+  forbidden: string[];
+  /** les commandes du projet (lint, typage, tests, build, merge), détectées puis confirmées */
+  commands: { name: string; cmd: string; confirmed: boolean }[];
+  /** ce que Max lit avant chaque demande */
+  readFirst: string[];
+  /** le carnet : '' = celui du bureau (Projets/<projet>/carnet.md), sinon un fichier du dépôt (son backlog) */
+  backlogFile: string;
+  createdAt: number;
+  /** calculé à chaque envoi : */
+  isGit?: boolean;
+  branches?: string[];
+  author?: string;
+  hookOk?: boolean;
+  map?: { commit: string; at: number } | null;
+  busy?: boolean;
+  missionId?: string;
+}
+
+/** La pause café en cours : quelle demande, et quand elle reprend (ms). */
+export interface PauseInfo { missionId: string; resumeAt: number }
+
 /** Telegram : relié ou pas (le jeton et le chat ne quittent jamais le serveur). */
 export interface TelegramStatus { linked: boolean; step: 'none' | 'token' | 'start' | 'test' | 'linked'; botName?: string; error?: string }
 
 // ── Navigateur → serveur ──
 export type ClientMsg =
-  | { t: 'start'; prompt: string }
+  | { t: 'start'; prompt: string; bypass?: boolean; projectId?: string }
   | { t: 'say'; text: string }
   | { t: 'stop' }
   | { t: 'answer'; requestId: string; allow: boolean }
@@ -136,7 +174,8 @@ export type ClientMsg =
 
 // ── Serveur → navigateur ──
 export type ServerMsg =
-  | { t: 'hello'; claude: ClaudeInfo; dir: string; settings: Settings; quota: Quota | null; missions: MissionInfo[]; current: { mission: MissionInfo; log: Logged[] } | null; build?: string }
+  | { t: 'hello'; claude: ClaudeInfo; dir: string; settings: Settings; quota: Quota | null; missions: MissionInfo[]; current: { mission: MissionInfo; log: Logged[] } | null; build?: string; pause: PauseInfo | null }
+  | { t: 'pause'; pause: PauseInfo | null }
   | { t: 'mission'; mission: MissionInfo }
   | { t: 'ev'; missionId: string; at: number; ev: OfficeEvent }
   | { t: 'closed'; missionId: string }

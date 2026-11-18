@@ -145,6 +145,10 @@ function Composer() {
   const draft = useOffice((s) => s.draft);
   const demo = useOffice((s) => s.connection === 'demo');
   const [text, setText] = useState('');
+  const [bypass, setBypass] = useState(false);
+  const allowBypass = useOffice((s) => s.settings.guard.allowBypass);
+  const projects = useOffice((s) => s.projects);
+  const projectId = useOffice((s) => s.projectId);
   const area = useRef<HTMLTextAreaElement>(null);
   const textRef = useRef(text);
   textRef.current = text;
@@ -169,10 +173,12 @@ function Composer() {
     const t = text.trim();
     if (!t || replaying) return;
     if (dict.listening) dict.stop();
+    if (mode === 'new' && bypass && allowBypass && !window.confirm('Ignorer le garde-fou pour cette demande ? L’équipe pourra utiliser ton abonnement jusqu’à 100 %, sans pause café.')) return;
     sfx('send');
-    if (mode === 'new') send({ t: 'start', prompt: t });
+    if (mode === 'new') send({ t: 'start', prompt: t, bypass: bypass && allowBypass, projectId: projectId || undefined });
     else send({ t: 'say', text: t });
     setText('');
+    setBypass(false);
   };
 
   return (
@@ -212,6 +218,19 @@ function Composer() {
           <button className="btn ghost" title="Range cette mission et repars de zéro" onClick={() => { sfx('click'); send({ t: 'new' }); }}>＋ Nouvelle mission</button>
         )}
       </div>
+      {mode === 'new' && !replaying && !demo && (projects.length > 0 || allowBypass) && (
+        <div className="composer-opts">
+          {projects.length > 0 && (
+            <label>Où travailler :
+              <select value={projectId} onChange={(e) => useOffice.setState({ projectId: e.target.value })}>
+                <option value="">Un nouveau dossier de demande</option>
+                {projects.map((p) => <option key={p.id} value={p.id}>Projet {p.name}{p.busy ? ' (demande en cours)' : ''}</option>)}
+              </select>
+            </label>
+          )}
+          {allowBypass && <label className={bypass ? 'warn' : ''}><input type="checkbox" checked={bypass} onChange={(e) => setBypass(e.target.checked)} /> Ignorer le garde-fou pour cette demande</label>}
+        </div>
+      )}
       {dict.problem && (
         <div className="hint" onClick={dict.clearProblem}>🎙️ {dictationHelp(dict.problem)}</div>
       )}

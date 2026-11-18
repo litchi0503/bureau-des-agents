@@ -17,6 +17,7 @@ import { ClaudeProcess, Normalizer, quotaFromEvent, type ClaudeBinary, type Turn
 import { agentsJson, ALWAYS_ALLOWED, chefPrompt, poleModel, SESSION_TOOLS } from './team.ts';
 import { defaultSettings, mergeSettings, modelFamily, modelLabel, type ModelId } from '../shared/settings.ts';
 import { checkReviewBash, checkReviewWrite } from './policy.ts';
+import { guardDecision } from './guard.ts';
 
 const RULES_FILE = 'Règlement du bureau.md';
 const HOOK_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hook.ts');
@@ -89,8 +90,6 @@ function whenFr(ms: number): string {
 }
 
 /** Garde-fous pour ne pas vider l'abonnement : plafond de l'énergie 5 h, et part maximale d'une mission. */
-const MAX_ENERGY = percentFromEnv('BUREAU_MAX_ENERGY', 60);
-const MAX_MISSION_ENERGY = percentFromEnv('BUREAU_MAX_MISSION', 0);
 const PAUSE_RESUME_TEXT = 'La pause café est finie : l’énergie est rechargée. Reprends exactement là où l’équipe s’était arrêtée, sans refaire ce qui est déjà fait, et mène la mission à son terme.';
 /** au-delà, un fichier n'est pas gardé en version (vidéos, gros exports) */
 const MAX_VERSION_SIZE = 5_000_000;
@@ -118,8 +117,11 @@ interface Current {
   live: Live | null;
   /** les prénoms déjà donnés dans cette mission */
   names: Set<string>;
-  /** l'énergie 5 h déjà utilisée (0-1) quand la mission a commencé : sert à plafonner sa consommation */
+  /** la part de la semaine déjà utilisée (0-1) quand la demande a commencé : sert à son budget */
   quotaBase?: number;
+  /** le budget de la demande est atteint : Max a demandé s'il continue */
+  budgetAsked?: boolean;
+  budgetUsed?: number;
   watcher: FSWatcher | null;
   fileTimers: Map<string, NodeJS.Timeout>;
   idleTimer: NodeJS.Timeout | null;
@@ -236,54 +238,42 @@ export class Bureau {
     const c = this.current;
     return {
       t: 'hello', claude: this.claudeInfo(), dir: this.dir, settings: this.settings, quota: this.quota,
-      missions: this.missions(), current: c ? { mission: c.mission, log: c.log } : null,
+      missions: this.missions(), current: c ? { mission: c.mission, log: c.log } : null, pause: this.pauseInfo(),
     };
   }
 
-  /** L'énergie 5 h utilisée (0-1), ou null si inconnue ou si la fenêtre s'est déjà rechargée. */
-  private energyUsed(): number | null {
+  /** La part de la semaine utilisée (0-1) : 0 si elle s'est déjà rechargée, undefined si inconnue. */
+  private weekUsed(): number | undefined {
     const q = this.quota;
-    if (!q) return null;
-    return this.windowsUsed().reduce((m, w) => Math.max(m, w.used), 0);
+    if (!q || q.sevenDay === undefined) return undefined;
+    return q.sevenDayResetsAt && Date.now() >= q.sevenDayResetsAt * 1000 ? 0 : q.sevenDay;
   }
 
-  /** Les fenêtres de l'abonnement (5 h, semaine) : part utilisée, 0 si elle s'est déjà rechargée. */
-  private windowsUsed(): { name: string; used: number; resetsAt: number | null }[] {
-    const q = this.quota;
-    if (!q) return [];
-    const now = Date.now();
-    const out = [{ name: '5 h', used: q.fiveHour, resetsAt: q.resetsAt }];
-    if (q.sevenDay !== undefined) out.push({ name: 'la semaine', used: q.sevenDay, resetsAt: q.sevenDayResetsAt ?? null });
-    return out.map((w) => (w.resetsAt && now > w.resetsAt * 1000 ? { ...w, used: 0 } : w));
-  }
-
-  /** Pourquoi on doit faire une pause café, et quand reprendre (ms), ou null si tout va bien. */
+  /** Pourquoi on doit faire une pause café, et quand reprendre (ms), ou null si tout va bien (voir server/guard.ts). */
   private limitReason(cur?: Current | null): { message: string; resumeAt: number } | null {
-    for (const w of this.windowsUsed()) {
-      if (MAX_ENERGY && w.used * 100 >= MAX_ENERGY) {
-        // la fenêtre se recharge à resetsAt ; si on ne la connaît pas, on revérifie dans 5 h au plus
-        const resumeAt = w.resetsAt ? w.resetsAt * 1000 : Date.now() + 5 * 3600 * 1000;
-        return {
-          resumeAt,
-          message: `☕ Pause café : ton abonnement est utilisé à ${Math.round(w.used * 100)} % sur ${w.name} (limite réglée à ${MAX_ENERGY} %). L’équipe reprend toute seule ${whenFr(resumeAt)}, quand l’énergie est rechargée.`,
-        };
-      }
-    }
-    const used = this.energyUsed();
-    if (cur && used !== null && MAX_MISSION_ENERGY && cur.quotaBase !== undefined && (used - cur.quotaBase) * 100 >= MAX_MISSION_ENERGY) {
-      return { resumeAt: Date.now() + 5 * 3600 * 1000, message: `☕ Pause café : cette mission a déjà consommé ${Math.round((used - cur.quotaBase) * 100)} % de ton abonnement (limite réglée à ${MAX_MISSION_ENERGY} %).` };
-    }
-    return null;
+    const r = guardDecision({ now: Date.now(), quota: this.quota, guard: this.settings.guard, bypass: cur?.mission.bypass });
+    if (r.kind !== 'pause') return null;
+    const where = r.window === '5h' ? 'la fenêtre de 5 h' : 'la semaine';
+    return {
+      resumeAt: r.resumeAt,
+      message: `☕ Pause café : ton abonnement est utilisé à ${Math.round(r.used * 100)} % sur ${where} (plafond ${r.cap} %). L’équipe reprend toute seule ${whenFr(r.resumeAt)}.`,
+    };
   }
 
-  /** Appelé à chaque mesure d'énergie : si une limite est atteinte, l'équipe fait une pause café. */
+  /** Appelé à chaque mesure d'énergie : plafond atteint = pause café ; budget de la demande atteint = Max demande. */
   private guard() {
     const cur = this.current;
     if (!cur || cur.mission.status !== 'working' || cur.stopAsked) return;
-    if (cur.quotaBase === undefined) cur.quotaBase = this.energyUsed() ?? undefined;
-    const why = this.limitReason(cur);
-    if (!why) return;
-    this.startPause(cur, why.resumeAt, why.message);
+    if (cur.quotaBase === undefined) cur.quotaBase = this.weekUsed();
+    const r = guardDecision({ now: Date.now(), quota: this.quota, guard: this.settings.guard, base: cur.quotaBase, bypass: cur.mission.bypass });
+    if (r.kind === 'pause') {
+      const why = this.limitReason(cur);
+      if (why) this.startPause(cur, why.resumeAt, why.message);
+    } else if (r.kind === 'budget' && !cur.budgetAsked) {
+      cur.budgetAsked = true;
+      cur.budgetUsed = r.used;
+      this.stop();
+    }
   }
 
   /** La pause café : on note où reprendre, on arrête l'équipe, et la reprise se fera toute seule (même après un redémarrage). */
@@ -345,8 +335,11 @@ export class Bureau {
     setInterval(() => { if (this.current?.mission.status === 'working') void this.probeQuota(); }, 2 * 60 * 1000).unref();
   }
 
+  pauseInfo() { const p = this.state.pause; return p ? { missionId: p.missionId, resumeAt: p.resumeAt } : null; }
+
   /** Programme la reprise automatique (elle survit à un redémarrage du bureau : voir init). */
   private armPause() {
+    this.broadcast({ t: 'pause', pause: this.pauseInfo() });
     if (this.pauseTimer) clearTimeout(this.pauseTimer);
     this.pauseTimer = null;
     const p = this.state.pause;
@@ -360,7 +353,8 @@ export class Bureau {
     this.pauseTimer = null;
     if (!p) return;
     const retry = (ms: number) => { this.pauseTimer = setTimeout(() => { void this.endPause(); }, ms); };
-    // une autre fenêtre (la semaine, par exemple) est peut-être encore pleine : on attend encore
+    // une mesure fraîche (la dernière date peut-être d'avant le reset), puis : une autre fenêtre est peut-être encore pleine
+    await this.probeQuota().catch(() => {});
     const why = this.limitReason();
     if (why) { p.resumeAt = why.resumeAt; this.save(); this.armPause(); return; }
     // une autre mission est en cours : on ne la dérange pas
@@ -369,12 +363,17 @@ export class Bureau {
       if (this.current?.mission.id !== p.missionId) await this.reopen(p.missionId);
       this.state.pause = undefined;
       this.save();
+      this.broadcast({ t: 'pause', pause: null });
+      const cur = this.current;
+      if (cur) this.record(cur, { k: 'state', who: 'chef', state: 'working', reason: 'Reprise après la pause café' });
+      this.notify('pause', `Fin de la pause café : l’équipe reprend « ${cur?.mission.title ?? ''} ».`);
       this.say(p.text);
     } catch (e) {
       const cur = this.current;
       if (cur) this.record(cur, { k: 'error', message: `La pause café est finie, mais je n’ai pas pu reprendre : ${e instanceof Error ? e.message : String(e)}` });
       this.state.pause = undefined;
       this.save();
+      this.broadcast({ t: 'pause', pause: null });
     }
   }
 
@@ -395,7 +394,7 @@ export class Bureau {
         if (l.ev.k === 'hire') names.add(l.ev.name);
       } catch { /* ligne abîmée : on la saute */ }
     }
-    const cur = newCurrent(m, { log, names, lastChefText: m.final ?? '', quotaBase: this.energyUsed() ?? undefined });
+    const cur = newCurrent(m, { log, names, lastChefText: m.final ?? '', quotaBase: this.weekUsed() });
     this.current = cur;
     this.watch(cur);
     this.broadcast({ t: 'mission', mission: m });
@@ -413,12 +412,13 @@ export class Bureau {
   private mission(id: string) { return this.state.missions.find((m) => m.id === id) ?? null; }
 
   // ── Une nouvelle mission ──
-  async start(prompt: string) {
+  async start(prompt: string, opts: { bypass?: boolean; projectId?: string } = {}) {
     const text = prompt.trim();
+    const bypass = opts.bypass === true && this.settings.guard.allowBypass;
     if (!text) throw new Error('Dis à Max ce que tu veux.');
     if (!this.claude) throw new Error('Claude Code n’est pas installé sur cet ordinateur.');
     if (this.current?.mission.status === 'working') throw new Error('L’équipe est déjà sur une mission. Attends qu’elle la rende, ou arrête-la.');
-    const blocked = this.limitReason();
+    const blocked = bypass ? null : this.limitReason();
     if (blocked) throw new Error(blocked.message);
     if (this.current) this.close();
 
@@ -431,12 +431,12 @@ export class Bureau {
 
     const mission: MissionInfo = {
       id: 'm' + Date.now().toString(36), title, prompt: text, folder, createdAt: Date.now(), workMs: 0,
-      status: 'working', stats: emptyStats(), files: [],
+      status: 'working', stats: emptyStats(), files: [], ...(bypass ? { bypass: true } : {}),
     };
     this.state.missions.push(mission);
     if (this.state.missions.length > MAX_MISSIONS) this.state.missions.splice(0, this.state.missions.length - MAX_MISSIONS);
     this.save();
-    const cur = newCurrent(mission, { busySince: Date.now(), quotaBase: this.energyUsed() ?? undefined });
+    const cur = newCurrent(mission, { busySince: Date.now(), quotaBase: this.weekUsed() });
     this.current = cur;
     this.watch(cur);
     this.broadcast({ t: 'mission', mission });
@@ -450,7 +450,7 @@ export class Bureau {
     const clean = text.trim();
     if (!clean) return;
     if (!this.claude) throw new Error('Claude Code n’est pas installé sur cet ordinateur.');
-    const blocked = this.limitReason();
+    const blocked = this.limitReason(cur);
     if (blocked) {
       // pendant la pause café, le message du patron est gardé et envoyé à la reprise
       const prev = this.state.pause?.missionId === cur.mission.id ? this.state.pause.text : PAUSE_RESUME_TEXT;
@@ -465,6 +465,8 @@ export class Bureau {
     if (cur.idleTimer) { clearTimeout(cur.idleTimer); cur.idleTimer = null; }
     l.lastText = clean;
     cur.stopAsked = false;
+    // le budget de la demande était atteint et Max a demandé : ta réponse lui rouvre un budget
+    if (cur.budgetAsked) { cur.budgetAsked = false; cur.quotaBase = this.weekUsed(); }
     if (cur.mission.status !== 'working') {
       cur.mission.status = 'working';
       cur.mission.endedAt = undefined;
@@ -561,6 +563,12 @@ export class Bureau {
     const l = cur.live;
     if (l) for (const id of l.norm.pendingRequests()) { l.norm.forgetRequest(id); this.record(cur, { k: 'ask_done', requestId: id, allow: false, cancelled: true }); }
     this.record(cur, { k: 'end', ok, text: m.final ?? '', ms, stopped });
+    if (cur.budgetAsked) {
+      const q = `J’ai consommé ${Math.round((cur.budgetUsed ?? 0) * 100)} % de la semaine sur cette demande (budget : ${this.settings.guard.budget} %). Je continue ?`;
+      this.record(cur, { k: 'say', who: 'chef', text: q });
+      cur.lastChefText = q;
+      this.notify('question', `Max : ${q}`);
+    } else if (!stopped) this.notify(ok ? 'done' : 'crash', ok ? `Demande terminée : ${m.title}` : `La demande « ${m.title} » s’est mal terminée.`);
     this.broadcast({ t: 'mission', mission: m });
     this.save();
     // Max reste disponible un moment pour les retouches, puis s'endort (il reprendra sa séance si on lui reparle)

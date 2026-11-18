@@ -94,6 +94,8 @@ export class World {
   printUntil = 0;
   boardUntil = 0;
   missionActive = false;
+  /** la pause café : Max reste à son bureau, sa tasse posée devant lui */
+  coffeeBreak = false;
   plan: PlanItem[] = [];
   /** qui fait quoi : écrit au tableau, coché quand l'agent a rendu son travail */
   assignments: { id: string; role: Role; name: string; task: string; status: 'working' | 'done' | 'failed' }[] = [];
@@ -359,6 +361,12 @@ export class World {
         break;
       case 'end':
         this.missionActive = false;
+        if (this.coffeeBreak) {
+          for (const a of this.actors.values()) if (a !== chef && !a.left) { a.left = true; if (live) this.exit(a); else this.remove(a); }
+          if (live && !chef.seated) this.queue(chef, { t: 'walk', tile: CHEF_SEAT.tile }, { t: 'sit', seat: CHEF_SEAT });
+          else if (!live) this.snapSeat(chef, CHEF_SEAT);
+          break;
+        }
         for (const a of this.actors.values()) if (a !== chef && !a.left) { a.left = true; if (live) this.exit(a); else this.remove(a); }
         if (live) {
           if (ev.ok) { this.fx.rain(22 * T); chef.happyUntil = this.time + 3; }
@@ -448,8 +456,12 @@ export class World {
     this.fx.update(dt);
     let moving = this.fx.busy || this.time < this.printUntil || this.time < this.boardUntil;
     const chef = this.chef;
-    // la vapeur du café
-    if (this.time > this.steamAt) { this.steamAt = this.time + 0.35; this.fx.steam(16 * T + 11, 13 * T + 4); }
+    // la vapeur du café (et celle de la tasse de Max, pendant la pause)
+    if (this.time > this.steamAt) {
+      this.steamAt = this.time + 0.35;
+      this.fx.steam(16 * T + 11, 13 * T + 4);
+      if (this.coffeeBreak) this.fx.steam(this.mugPt.x + 1, this.mugPt.y - 3);
+    }
     // le chat
     if (this.cat.update(dt, this.time, this.grid, (x, y) => this.fx.floatIcon(x, y, 'zzz'))) moving = true;
     // le jukebox : des notes qui s'envolent quand il joue
@@ -542,6 +554,21 @@ export class World {
     }
     this.rosterChanged();
   }
+
+  /** La pause café commence (Max va poser sa tasse sur son bureau) ou se finit. */
+  setPause(on: boolean) {
+    if (on === this.coffeeBreak) return;
+    this.coffeeBreak = on;
+    const chef = this.chef;
+    if (on) {
+      chef.tasks = [];
+      if (!chef.seated) this.queue(chef, { t: 'walk', tile: CHEF_SEAT.tile }, { t: 'sit', seat: CHEF_SEAT });
+      this.queue(chef, { t: 'call', fn: () => { this.fx.floatIcon(this.mugPt.x, this.mugPt.y - 4, 'coffee'); chef.happyUntil = this.time + 1.2; } });
+    }
+  }
+
+  /** La tasse de Max, posée sur son bureau. */
+  get mugPt(): Pt { return { x: 9 * T + 10, y: 7 * T + 1 }; }
 
   petCat() {
     this.cat.pet(this.time);

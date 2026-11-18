@@ -4,8 +4,9 @@ import { create } from 'zustand';
 import { countStats, emptyStats, normRole } from '../../shared/activity.ts';
 import { defaultSettings } from '../../shared/settings.ts';
 import { setPlaces } from '../engine/layout.ts';
+import { world } from '../engine/instance.ts';
 import type {
-  ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, TelegramStatus, VersionInfo,
+  ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, TelegramStatus, VersionInfo, PauseInfo, ProjectInfo,
 } from '../../shared/protocol.ts';
 import { sfx } from '../audio/sfx.ts';
 import { say } from '../audio/voice.ts';
@@ -66,6 +67,12 @@ interface S {
   settings: Settings;
   quota: Quota | null;
   telegram: TelegramStatus | null;
+  /** la pause café en cours (bulle de Max, reprise automatique) */
+  pause: PauseInfo | null;
+  /** les projets (dossiers existants) enregistrés */
+  projects: ProjectInfo[];
+  /** le projet choisi pour la prochaine demande ('' = un nouveau dossier de demande) */
+  projectId: string;
   missions: MissionInfo[];
   mission: MissionInfo | null;
   /** vrai pendant une rediffusion (ou la démo) */
@@ -141,6 +148,9 @@ export const useOffice = create<S>((set, get) => ({
   settings: defaultSettings(),
   quota: null,
   telegram: null,
+  pause: null,
+  projects: [],
+  projectId: pref('projectId', ''),
   missions: [],
   mission: null,
   replaying: false,
@@ -194,7 +204,8 @@ export const useOffice = create<S>((set, get) => ({
     const s = get();
     switch (m.t) {
       case 'hello': {
-        set({ claude: m.claude, dir: m.dir, settings: m.settings, quota: m.quota, missions: m.missions });
+        set({ claude: m.claude, dir: m.dir, settings: m.settings, quota: m.quota, missions: m.missions, pause: m.pause ?? null });
+        world.setPause(!!m.pause);
         placesFrom(m.settings);
         if (s.replaying) break;
         if (m.current) {
@@ -233,6 +244,10 @@ export const useOffice = create<S>((set, get) => ({
         break;
       case 'telegram':
         set({ telegram: m.status });
+        break;
+      case 'pause':
+        set({ pause: m.pause });
+        world.setPause(!!m.pause);
         break;
       case 'settings':
         set({ settings: m.settings });

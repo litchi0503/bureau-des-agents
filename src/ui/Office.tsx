@@ -226,6 +226,7 @@ function Bubbles() {
   const order = useOffice((s) => s.order);
   const filming = useOffice((s) => s.filming);
   const vertical = useOffice((s) => s.vertical || s.portrait);
+  const pause = useOffice((s) => s.pause);
 
   // Seules les actions les plus fraîches ont une bulle complète (les autres, une simple icône),
   // et jamais deux bulles qui se chevauchent : on les choisit de la plus récente à la plus ancienne.
@@ -260,6 +261,9 @@ function Bubbles() {
     if (!isChef && !a && actor) return { ...base, mode: filming ? 'none' : 'tag' };
     const ask = askOf(id);
     if (ask) return { ...base, mode: 'ask', ask };
+    if (isChef && pause) {
+      return { ...base, mode: 'full', text: `Pause café : reprise vers ${new Date(pause.resumeAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`, icon: '☕' };
+    }
     if (isChef) {
       const working = order.filter((k) => agents[k]?.status === 'working' || agents[k]?.status === 'reporting').length;
       if (chef.typing) return { ...base, mode: 'full', text: lastSentence(chef.typing, 70) };

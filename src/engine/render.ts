@@ -143,6 +143,15 @@ export class Renderer {
     }
     if (f.kind === 'chefDesk') {
       if (who) this.logo(g, p.x + 31, p.y + 10, true, t);
+      if (world.coffeeBreak) {
+        // la tasse de la pause café
+        const mx = world.mugPt.x - 2, my = world.mugPt.y;
+        g.fillStyle = P.ink; g.fillRect(mx - 1, my - 1, 7, 7);
+        g.fillStyle = '#f4efe6'; g.fillRect(mx, my, 5, 5);
+        g.fillStyle = '#6b4226'; g.fillRect(mx, my, 5, 1);
+        g.fillStyle = P.ink; g.fillRect(mx + 5, my + 1, 2, 3);
+        g.fillStyle = '#f4efe6'; g.fillRect(mx + 5, my + 2, 1, 1);
+      }
       // les rapports rendus, empilés dans la corbeille
       const n = Math.min(world.inbox, 7);
       for (let i = 0; i < n; i++) {

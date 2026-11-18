@@ -154,7 +154,7 @@ const str = (v: unknown, max = 20000) => (typeof v === 'string' ? v.slice(0, max
 async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
   switch (m.t) {
     case 'start':
-      await bureau.start(str(m.prompt));
+      await bureau.start(str(m.prompt), { bypass: m.bypass === true, projectId: m.projectId ? str(m.projectId, 80) : undefined });
       break;
     case 'say':
       bureau.say(str(m.text));
