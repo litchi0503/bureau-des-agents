@@ -65,7 +65,19 @@ export type OfficeEvent =
   | { k: 'ask'; who: string; requestId: string; tool: string; label: string; detail: string; full: boolean }
   | { k: 'ask_done'; requestId: string; allow: boolean; cancelled?: boolean }
   | { k: 'end'; ok: boolean; text: string; ms: number; stopped?: boolean }
+  /** une note du bureau dans le journal d'un agent (un appel refusé par le garde-fou, une relance…) */
+  | { k: 'note'; who: string; text: string; level: 'info' | 'warn' | 'error' }
+  /** un changement d'état noté par le bureau (bloqué, planté, en attente d'une place, pause café…) */
+  | { k: 'state'; who: string; state: AgentState; reason?: string }
+  /** le modèle et la puissance d'un agent ; « from » = une bascule (le quota de l'autre modèle est plein) */
+  | { k: 'model'; who: string; model: string; effort: string; from?: string; reason?: string }
   | { k: 'error'; message: string };
+
+/**
+ * L'état d'un agent, pour sa pastille : il travaille, attend ta réponse (ou une place libre), fait la pause café,
+ * est bloqué (rien depuis longtemps), a planté, ou a fini.
+ */
+export type AgentState = 'working' | 'waiting' | 'queued' | 'pause' | 'blocked' | 'crashed' | 'done';
 
 /** Un événement daté, tel qu'il est enregistré. */
 export interface Logged { at: number; ev: OfficeEvent }
@@ -95,7 +107,14 @@ export type { Settings } from './settings.ts';
 import type { Settings } from './settings.ts';
 
 /** L'énergie de l'abonnement : part utilisée (0-1) de la fenêtre de 5 h et de celle de la semaine, et leur recharge (secondes). */
-export interface Quota { fiveHour: number; resetsAt: number | null; sevenDay?: number; sevenDayResetsAt?: number | null }
+export interface Quota {
+  fiveHour: number; resetsAt: number | null; sevenDay?: number; sevenDayResetsAt?: number | null;
+  /** les limites propres à un modèle (rateLimitType seven_day_opus, seven_day_sonnet…), quand Claude Code les donne */
+  models?: Record<string, { used: number; resetsAt: number | null }>;
+}
+
+/** Telegram : relié ou pas (le jeton et le chat ne quittent jamais le serveur). */
+export interface TelegramStatus { linked: boolean; step: 'none' | 'token' | 'start' | 'test' | 'linked'; botName?: string; error?: string }
 
 // ── Navigateur → serveur ──
 export type ClientMsg =
@@ -111,7 +130,9 @@ export type ClientMsg =
   | { t: 'versions'; missionId: string; file: string }
   | { t: 'team_history' }
   | { t: 'replay'; missionId: string }
-  | { t: 'settings'; settings: Partial<Settings> };
+  | { t: 'settings'; settings: Partial<Settings> }
+  /** relancer un agent planté (bouton « Relancer » de sa fiche) */
+  | { t: 'relaunch'; who: string };
 
 // ── Serveur → navigateur ──
 export type ServerMsg =
@@ -125,4 +146,5 @@ export type ServerMsg =
   | { t: 'team_history'; entries: TeamEntry[] }
   | { t: 'quota'; quota: Quota }
   | { t: 'settings'; settings: Settings }
+  | { t: 'telegram'; status: TelegramStatus }
   | { t: 'toast'; kind: 'info' | 'error'; text: string };

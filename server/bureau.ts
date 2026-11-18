@@ -5,17 +5,29 @@
 // Une mission = une séance Claude Code lancée dans le dossier de la mission. On peut lui reparler
 // une fois finie (retouches) : la même séance reprend.
 import { execFile } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
 import { appendFile, copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { countStats, emptyStats, normRole } from '../shared/activity.ts';
-import type { ClaudeInfo, FileInfo, Logged, MissionInfo, OfficeEvent, Quota, Role, ServerMsg, Settings, TeamEntry, VersionInfo } from '../shared/protocol.ts';
+import { countStats, emptyStats, normRole, roleOfType, ROLES } from '../shared/activity.ts';
+import type { AgentState, ClaudeInfo, FileInfo, Logged, MissionInfo, OfficeEvent, Pole, Quota, ServerMsg, Settings, TeamEntry, VersionInfo } from '../shared/protocol.ts';
 import { ClaudeProcess, Normalizer, quotaFromEvent, type ClaudeBinary, type TurnResult } from './claude.ts';
-import { agentsJson, ALWAYS_ALLOWED, chefPrompt, SESSION_TOOLS } from './team.ts';
-import { defaultSettings, mergeSettings } from '../shared/settings.ts';
+import { agentsJson, ALWAYS_ALLOWED, chefPrompt, poleModel, SESSION_TOOLS } from './team.ts';
+import { defaultSettings, mergeSettings, modelFamily, modelLabel, type ModelId } from '../shared/settings.ts';
+import { checkReviewBash, checkReviewWrite } from './policy.ts';
 
 const RULES_FILE = 'Règlement du bureau.md';
+const HOOK_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hook.ts');
+/** au-delà, un appel Agent qui attend une place est refusé (Max pourra le relancer plus tard) */
+const SLOT_WAIT_MS = 20 * 60 * 1000;
+
+type Json = Record<string, any>;
+/** La réponse au hook PreToolUse (voir server/hook.ts). */
+export interface HookReply { exit: 0 | 2; stdout?: string; stderr?: string }
+const pass: HookReply = { exit: 0 };
+const deny = (stderr: string): HookReply => ({ exit: 2, stderr });
 
 const RULES_TEMPLATE = `# Le règlement du bureau
 
@@ -115,6 +127,24 @@ interface Current {
   busySince: number | null;
   stopAsked: boolean;
   lastChefText: string;
+  /** les places occupées, pôle par pôle (identifiants des appels Agent) */
+  slots: Map<Pole, Set<string>>;
+  /** les appels Agent qui attendent une place */
+  waiters: { pole: Pole; id: string; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }[];
+  /** le modèle de chaque agent (pour la fiche et les bascules) */
+  models: Map<string, string>;
+  /** le dernier état noté de chaque agent */
+  states: Map<string, AgentState>;
+  /** les agents déjà relancés une fois après un plantage */
+  relaunched: Set<string>;
+}
+
+function newCurrent(mission: MissionInfo, extra: Partial<Current> = {}): Current {
+  return {
+    mission, log: [], live: null, names: new Set(), watcher: null, fileTimers: new Map(), idleTimer: null,
+    busySince: null, stopAsked: false, lastChefText: '', slots: new Map(), waiters: [], models: new Map(),
+    states: new Map(), relaunched: new Set(), ...extra,
+  };
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -147,6 +177,11 @@ export class Bureau {
   current: Current | null = null;
   quota: Quota | null = null;
   private pauseTimer: NodeJS.Timeout | null = null;
+  /** le jeton secret du hook (propre à ce lancement du bureau) et son adresse (posée par index.ts) */
+  readonly hookToken = randomBytes(24).toString('hex');
+  hookUrl = '';
+  /** les modèles dont le quota est plein, jusqu'à quand (ms) */
+  private limits = new Map<ModelId, number>();
 
   private claude: ClaudeBinary | null;
   private broadcast: (m: ServerMsg) => void;
@@ -248,10 +283,18 @@ export class Bureau {
     if (cur.quotaBase === undefined) cur.quotaBase = this.energyUsed() ?? undefined;
     const why = this.limitReason(cur);
     if (!why) return;
-    this.record(cur, { k: 'error', message: why.message });
-    this.state.pause = { missionId: cur.mission.id, resumeAt: why.resumeAt, text: PAUSE_RESUME_TEXT };
+    this.startPause(cur, why.resumeAt, why.message);
+  }
+
+  /** La pause café : on note où reprendre, on arrête l'équipe, et la reprise se fera toute seule (même après un redémarrage). */
+  private startPause(cur: Current, resumeAt: number, message: string) {
+    if (this.state.pause?.missionId === cur.mission.id && cur.mission.status !== 'working') return;
+    this.record(cur, { k: 'error', message });
+    this.record(cur, { k: 'state', who: 'chef', state: 'pause', reason: message });
+    this.state.pause = { missionId: cur.mission.id, resumeAt, text: PAUSE_RESUME_TEXT };
     this.save();
     this.armPause();
+    this.notify('pause', message);
     this.stop();
     // l'interruption polie ne suffit pas quand plusieurs agents travaillent en parallèle : au bout de 5 s, on coupe net
     const proc = cur.live?.proc;
@@ -260,7 +303,7 @@ export class Bureau {
 
   /** Une nouvelle mesure d'énergie : on la montre, on la garde, et on vérifie les limites. */
   private setQuota(q: Partial<Quota>) {
-    this.quota = { fiveHour: 0, resetsAt: null, ...this.quota, ...q };
+    this.quota = { fiveHour: 0, resetsAt: null, ...this.quota, ...q, ...(q.models ? { models: { ...this.quota?.models, ...q.models } } : {}) };
     this.broadcast({ t: 'quota', quota: this.quota });
     this.state.quota = this.quota;
     this.save();
@@ -352,10 +395,7 @@ export class Bureau {
         if (l.ev.k === 'hire') names.add(l.ev.name);
       } catch { /* ligne abîmée : on la saute */ }
     }
-    const cur: Current = {
-      mission: m, log, live: null, names, watcher: null, fileTimers: new Map(), idleTimer: null,
-      busySince: null, stopAsked: false, lastChefText: m.final ?? '', quotaBase: this.energyUsed() ?? undefined,
-    };
+    const cur = newCurrent(m, { log, names, lastChefText: m.final ?? '', quotaBase: this.energyUsed() ?? undefined });
     this.current = cur;
     this.watch(cur);
     this.broadcast({ t: 'mission', mission: m });
@@ -396,10 +436,7 @@ export class Bureau {
     this.state.missions.push(mission);
     if (this.state.missions.length > MAX_MISSIONS) this.state.missions.splice(0, this.state.missions.length - MAX_MISSIONS);
     this.save();
-    const cur: Current = {
-      mission, log: [], live: null, names: new Set(), watcher: null, fileTimers: new Map(), idleTimer: null,
-      busySince: Date.now(), stopAsked: false, lastChefText: '', quotaBase: this.energyUsed() ?? undefined,
-    };
+    const cur = newCurrent(mission, { busySince: Date.now(), quotaBase: this.energyUsed() ?? undefined });
     this.current = cur;
     this.watch(cur);
     this.broadcast({ t: 'mission', mission });
@@ -442,10 +479,13 @@ export class Bureau {
     if (!this.claude) throw new Error('Claude Code n’est pas installé sur cet ordinateur.');
     const s = this.settings;
     const resume = opts.fresh ? undefined : cur.mission.sessionId;
+    const limited = this.limited();
+    const chefModel = poleModel(s, 'chef', limited) ?? s.team.chef.model;
     // le Normalizer renvoie vers la mission courante ; « proc » est connu dès que la ligne suivante a tourné
     const norm: Normalizer = new Normalizer({
       emit: (ev) => { if (cur.live?.proc === proc) this.onEvent(cur, ev); },
       onQuota: (q) => this.setQuota(q),
+      onLimit: (info) => this.onLimit(info),
       onResult: (r) => { if (cur.live?.proc === proc) this.onResult(cur, r); },
       folder: cur.mission.folder,
       names: cur.names,
@@ -453,8 +493,9 @@ export class Bureau {
     const proc: ClaudeProcess = new ClaudeProcess(
       {
         bin: this.claude.path, cwd: cur.mission.folder, permissionMode: s.permission === 'ask' ? 'acceptEdits' : 'auto',
-        model: s.team.chef.model, effort: s.team.chef.effort, resume, tools: SESSION_TOOLS, allowedTools: ALWAYS_ALLOWED,
-        agents: agentsJson(s), appendSystemPrompt: chefPrompt(readRules(this.dir), s), useApiKey: process.env.BUREAU_USE_API_KEY === '1',
+        model: chefModel, effort: s.team.chef.effort, resume, tools: SESSION_TOOLS, allowedTools: ALWAYS_ALLOWED,
+        agents: agentsJson(s, limited), appendSystemPrompt: chefPrompt(readRules(this.dir), s, limited), useApiKey: process.env.BUREAU_USE_API_KEY === '1',
+        settings: this.hookSettings(), env: { BUREAU_HOOK_URL: this.hookUrl, BUREAU_HOOK_TOKEN: this.hookToken },
       },
       (m) => {
         if (cur.live?.proc !== proc) return; // un ancien processus qui parle encore
@@ -466,6 +507,11 @@ export class Bureau {
     const l: Live = { proc, norm, stopping: false, lastText: '', resumed: !!resume };
     cur.live = l;
     proc.start();
+    const before = cur.models.get('chef');
+    if (before !== chefModel) {
+      cur.models.set('chef', chefModel);
+      this.record(cur, { k: 'model', who: 'chef', model: chefModel, effort: s.team.chef.effort, ...(chefModel !== s.team.chef.model ? { from: s.team.chef.model, reason: `quota de ${modelLabel(s.team.chef.model)} plein` } : {}) });
+    }
     return l;
   }
 
@@ -479,6 +525,11 @@ export class Bureau {
     if (ev.k === 'say' && ev.who === 'chef') cur.lastChefText = ev.text;
     countStats(m.stats, ev);
     this.record(cur, ev);
+    if (ev.k === 'leave') {
+      this.releaseSlot(cur, ev.who);
+      cur.states.set(ev.who, ev.ok ? 'done' : 'crashed');
+      if (!ev.ok) this.onAgentCrash(cur, ev.who, 'L’agent s’est arrêté sur une erreur.');
+    }
     if (ev.k === 'hire' || ev.k === 'init') this.save();
   }
 
@@ -498,6 +549,8 @@ export class Bureau {
       for (const id of present) this.record(cur, { k: 'leave', who: id, ok: false, tokens: 0, tools: 0, ms: 0 });
       present.clear();
     }
+    for (const id of [...cur.slots.values()].flatMap((x) => [...x])) this.releaseSlot(cur, id);
+    for (const w of cur.waiters.splice(0)) { clearTimeout(w.timer); w.resolve(false); }
     const now = Date.now();
     m.status = ok ? 'done' : stopped ? 'stopped' : 'error';
     m.endedAt = now;
@@ -652,6 +705,167 @@ export class Bureau {
     }
     return out;
   }
+
+  // ── Le garde-fou de l'équipe (hook PreToolUse) : places, modèles, interdits ──
+
+  /** Les modèles dont le quota est plein en ce moment. */
+  limited(): Set<string> {
+    const now = Date.now();
+    for (const [m, until] of this.limits) if (until <= now) this.limits.delete(m);
+    return new Set(this.limits.keys());
+  }
+
+  /** Une limite propre à un modèle (rate_limit_event) : les prochains appels de ce modèle basculent sur leur repli. */
+  private onLimit(info: Json) {
+    if (info.status !== 'rejected') return;
+    const type = String(info.rateLimitType ?? '');
+    const fam: ModelId | null = type === 'seven_day_opus' ? 'opus' : type === 'seven_day_sonnet' ? 'sonnet' : null;
+    if (fam) this.setLimited(fam, Number(info.resetsAt ?? 0) * 1000 || Date.now() + 3600_000, `limite de la semaine propre à ${modelLabel(fam)}`);
+  }
+
+  /** Note qu'un modèle n'a plus de quota jusqu'à « until », et le dit dans le journal. */
+  setLimited(fam: ModelId, until: number, why: string) {
+    const was = this.limits.has(fam);
+    this.limits.set(fam, Math.max(until, this.limits.get(fam) ?? 0));
+    if (was) return;
+    const cur = this.current;
+    const s = this.settings;
+    const poles = (Object.keys(s.team) as Pole[]).filter((p) => s.team[p].model === fam);
+    const text = `Quota de ${modelLabel(fam)} plein (${why}) : ${poles.map((p) => `${ROLES[p].label} → ${s.team[p].fallback === 'none' ? 'pause café' : modelLabel(s.team[p].fallback)}`).join(', ') || 'aucun pôle concerné'}.`;
+    if (cur) this.record(cur, { k: 'note', who: 'chef', text, level: 'warn' });
+    this.notify('model', text);
+  }
+
+  /** Les hooks du garde-fou, passés à Claude Code par --settings (actifs même en mode restreint). */
+  private hookSettings(): string {
+    const command = `"${process.execPath}" "${HOOK_SCRIPT}"`;
+    return JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Agent|Task|Bash|Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command, timeout: 1800 }] }] } });
+  }
+
+  /** Le jeton présenté par le hook est-il le bon ? (comparaison à temps constant) */
+  hookAllowed(token: string): boolean {
+    const a = Buffer.from(token);
+    const b = Buffer.from(this.hookToken);
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  /** Le hook demande si un appel d'outil est permis (et comment le modifier). */
+  async onHook(p: Json): Promise<HookReply> {
+    const cur = this.current;
+    if (!cur || !cur.live) return pass;
+    const tool = String(p.tool_name ?? '');
+    const input = (p.tool_input ?? {}) as Json;
+    // qui fait l'appel : Max, ou un membre de l'équipe (son agent_type)
+    const agentType = typeof p.agent_type === 'string' ? p.agent_type : '';
+    const pole = agentType ? roleOfType(agentType) : 'chef';
+    const who = (agentType && cur.live.norm.agentOfTaskId(String(p.agent_id ?? ''))) || 'chef';
+    if (tool === 'Agent' || tool === 'Task') return this.hookAgent(cur, input, String(p.tool_use_id ?? ''));
+    let why: string | null = null;
+    if (tool === 'Bash') {
+      const cmd = String(input.command ?? '');
+      if (pole === 'relecture') why = checkReviewBash(cmd);
+      why ??= await this.projectBash(cur, cmd);
+    } else {
+      const file = String(input.file_path ?? input.notebook_path ?? '');
+      if (pole === 'relecture') why = checkReviewWrite(file);
+      why ??= this.projectWrite(cur, file);
+    }
+    if (!why) return pass;
+    this.record(cur, { k: 'note', who, text: `Refusé : ${why}`, level: 'warn' });
+    return deny(why);
+  }
+
+  /** Un appel Agent : le modèle du pôle (ou son repli), sa puissance, et une place libre. */
+  private async hookAgent(cur: Current, input: Json, id: string): Promise<HookReply> {
+    const role = roleOfType(String(input.subagent_type ?? ''));
+    if (role === 'renfort' || role === 'chef') return deny('Seuls les pôles du bureau peuvent être appelés : chercheur, designer, developpeur, relecteur, redacteur.');
+    const pole = role;
+    const s = this.settings;
+    const conf = s.team[pole];
+    const model = poleModel(s, pole, this.limited());
+    if (!model) {
+      const until = Math.max(this.limits.get(conf.model) ?? 0, Date.now() + 15 * 60 * 1000);
+      const why = `Le quota de ${modelLabel(conf.model)} est plein et le pôle ${ROLES[pole].label} n’a pas de repli : pause café jusqu’au reset.`;
+      this.record(cur, { k: 'state', who: id, state: 'pause', reason: why });
+      this.startPause(cur, until, `☕ Pause café : ${why}`);
+      return deny(why);
+    }
+    if (!(await this.takeSlot(cur, pole, id))) {
+      return deny(`Le pôle ${ROLES[pole].label} est complet (${conf.places} place${conf.places > 1 ? 's' : ''}) depuis trop longtemps : attends qu’un agent ait fini, puis rappelle-le.`);
+    }
+    // petites tâches : Max peut demander Haiku (et une puissance faible) ; sinon, le modèle et la puissance du pôle
+    const small = input.model === 'haiku';
+    const finalModel = small ? 'haiku' : model;
+    const effort = small ? String(input.effort ?? 'low') : conf.effort;
+    cur.models.set(id, finalModel);
+    this.record(cur, { k: 'model', who: id, model: finalModel, effort, ...(!small && model !== conf.model ? { from: conf.model, reason: `quota de ${modelLabel(conf.model)} plein` } : {}) });
+    return {
+      exit: 0,
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { ...input, model: finalModel, effort } } }),
+    };
+  }
+
+  /** Une place au pôle : tout de suite s'il en reste, sinon on attend qu'un agent du pôle s'en aille. */
+  private takeSlot(cur: Current, pole: Pole, id: string): Promise<boolean> {
+    const places = this.settings.team[pole].places;
+    let set = cur.slots.get(pole);
+    if (!set) cur.slots.set(pole, (set = new Set()));
+    if (set.has(id) || set.size < places) { set.add(id); return Promise.resolve(true); }
+    this.record(cur, { k: 'state', who: id, state: 'queued', reason: `Attend une place au pôle ${ROLES[pole].label} (${places} place${places > 1 ? 's' : ''})` });
+    cur.states.set(id, 'queued');
+    return new Promise((resolve) => {
+      const w = { pole, id, resolve, timer: setTimeout(() => { cur.waiters = cur.waiters.filter((x) => x !== w); resolve(false); }, SLOT_WAIT_MS) };
+      cur.waiters.push(w);
+    });
+  }
+
+  private releaseSlot(cur: Current, id: string) {
+    for (const [pole, set] of cur.slots) {
+      if (!set.delete(id)) continue;
+      const i = cur.waiters.findIndex((w) => w.pole === pole);
+      if (i < 0 || set.size >= this.settings.team[pole].places) continue;
+      const [w] = cur.waiters.splice(i, 1);
+      clearTimeout(w.timer);
+      set.add(w.id);
+      cur.states.set(w.id, 'working');
+      this.record(cur, { k: 'state', who: w.id, state: 'working', reason: 'Une place s’est libérée' });
+      w.resolve(true);
+    }
+  }
+
+  /** Un agent a planté : selon le réglage, on le fait relancer une fois, on prévient, ou on arrête la demande. */
+  private onAgentCrash(cur: Current, who: string, reason: string) {
+    const policy = this.settings.follow.onCrash;
+    const name = cur.log.find((l) => l.ev.k === 'hire' && l.ev.id === who)?.ev as { name?: string; role?: string } | undefined;
+    const label = name?.name ?? (who === 'chef' ? 'Max' : 'Un agent');
+    this.record(cur, { k: 'state', who, state: 'crashed', reason });
+    this.notify('crash', `${label} a planté : ${reason}`);
+    if (policy === 'stop') { this.record(cur, { k: 'note', who, text: 'Demande arrêtée (réglage « Arrêter la demande »).', level: 'error' }); this.stop(); return; }
+    if (policy === 'retry' && who !== 'chef' && !cur.relaunched.has(who)) this.relaunch(who, true);
+  }
+
+  /** Fait relancer un agent planté par Max, avec la même mission (bouton « Relancer », ou relance automatique). */
+  relaunch(who: string, auto = false) {
+    const cur = this.current;
+    if (!cur) throw new Error('Aucune demande en cours.');
+    const hire = cur.log.find((l) => l.ev.k === 'hire' && l.ev.id === who)?.ev;
+    if (!hire || hire.k !== 'hire') throw new Error('Agent introuvable.');
+    cur.relaunched.add(who);
+    this.record(cur, { k: 'note', who, text: auto ? 'Relance automatique (une fois).' : 'Relance demandée.', level: 'info' });
+    const text = `${hire.name} (pôle ${ROLES[normRole(hire.role)].label}) a planté sur « ${hire.task} ». Relance-le une seule fois, avec la même mission (subagent_type ${hire.type}).`;
+    if (cur.mission.status === 'working' && cur.live?.proc.alive) cur.live.proc.send(text);
+    else this.say(text);
+  }
+
+  /** Une alerte (Telegram, si relié et si la case est cochée dans l'onglet Suivi). */
+  notify(kind: 'crash' | 'question' | 'pause' | 'done' | 'blocked' | 'model', text: string) {
+    this.onNotify?.(kind, text);
+  }
+  onNotify: ((kind: 'crash' | 'question' | 'pause' | 'done' | 'blocked' | 'model', text: string) => void) | null = null;
+
+  /** Les règles d'un dossier de projet (section Projets) : rien à vérifier pour une mission sans projet. */
+  protected async projectBash(_cur: Current, _cmd: string): Promise<string | null> { return null; }
+  protected projectWrite(_cur: Current, _file: string): string | null { return null; }
 
   // ── Les commandes du bureau ──
   stop() {

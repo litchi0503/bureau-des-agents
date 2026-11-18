@@ -53,6 +53,12 @@ export interface ProcessOptions {
   /** les consignes du chef, ajoutées à celles de Claude Code */
   appendSystemPrompt: string;
   useApiKey: boolean;
+  /** des réglages en plus (les hooks du garde-fou), en JSON : ils restent actifs en mode restreint */
+  settings?: string;
+  /** des dossiers en plus où l'équipe peut travailler (--add-dir) */
+  addDirs?: string[];
+  /** des variables d'environnement en plus (le jeton du hook) */
+  env?: Record<string, string>;
 }
 
 type Json = Record<string, any>;
@@ -64,6 +70,10 @@ export function quotaFromEvent(m: Json): Partial<Quota> {
   if (w.five_hour) { part.fiveHour = Number(w.five_hour.utilization ?? 0); part.resetsAt = Number(w.five_hour.resetsAt ?? 0) || null; }
   const week = w.seven_day ?? Object.entries(w).find(([k]) => /seven|week/i.test(k))?.[1] as Json | undefined;
   if (week) { part.sevenDay = Number(week.utilization ?? 0); part.sevenDayResetsAt = Number(week.resetsAt ?? 0) || null; }
+  // une limite propre à un modèle (seven_day_opus, seven_day_sonnet…)
+  const info = m.rate_limit_info ?? {};
+  const fam = /^seven_day_(fable|opus|sonnet|haiku)$/.exec(String(info.rateLimitType ?? ''))?.[1];
+  if (fam && info.utilization !== undefined) part.models = { [fam]: { used: Number(info.utilization), resetsAt: Number(info.resetsAt ?? 0) || null } };
   return part;
 }
 
@@ -98,6 +108,11 @@ export class ClaudeProcess {
     if (o.effort) args.push('--effort', o.effort);
     if (o.resume) args.push('--resume', o.resume);
     if (o.allowedTools.length) args.push('--allowedTools', o.allowedTools.join(','));
+    if (o.settings) args.push('--settings', o.settings);
+    for (const d of o.addDirs ?? []) args.push('--add-dir', d);
+    // les sections propres à la machine (dossier, git…) passent dans le premier message : le prompt système reste
+    // identique d'une demande à l'autre (cache de prompt)
+    args.push('--exclude-dynamic-system-prompt-sections');
     // pas de questions à choix multiples : le chef pose ses questions dans la conversation
     args.push('--disallowedTools', 'AskUserQuestion');
     const env: NodeJS.ProcessEnv = {
@@ -109,6 +124,7 @@ export class ClaudeProcess {
       CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1',
       // l'équipe travaille au premier plan : le chef attend les rapports, puis assemble le rendu
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+      ...(o.env ?? {}),
     };
     if (!o.useApiKey) { delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; }
     const p = spawn(o.bin, args, { cwd: o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -198,20 +214,28 @@ export class Normalizer {
 
   private emit: (ev: OfficeEvent) => void;
   private onQuota: (q: Partial<Quota>) => void;
+  private onLimit: (info: Json) => void;
   private onResult: (r: TurnResult) => void;
   private folder: string;
   /** les prénoms déjà pris dans cette mission (partagés entre les reprises) */
   private names: Set<string>;
 
-  constructor(opts: { emit: (ev: OfficeEvent) => void; onQuota: (q: Partial<Quota>) => void; onResult: (r: TurnResult) => void; folder: string; names: Set<string> }) {
+  constructor(opts: { emit: (ev: OfficeEvent) => void; onQuota: (q: Partial<Quota>) => void; onLimit?: (info: Json) => void; onResult: (r: TurnResult) => void; folder: string; names: Set<string> }) {
     this.emit = opts.emit;
     this.onQuota = opts.onQuota;
+    this.onLimit = opts.onLimit ?? (() => {});
     this.onResult = opts.onResult;
     this.folder = opts.folder;
     this.names = opts.names;
   }
 
   inputOf(requestId: string) { return this.pendingInputs.get(requestId); }
+  /** Le membre de l'équipe (identifiant de son appel Agent) derrière un agent_id de Claude Code. */
+  agentOfTaskId(taskId: string) { return this.agentOfTask.get(taskId); }
+  /** Le dernier événement de chacun (pour repérer un agent bloqué). */
+  readonly lastSeen = new Map<string, number>();
+  /** les jetons consommés par chaque membre de l'équipe (d'après Claude Code) */
+  readonly tokens = new Map<string, number>();
   forgetRequest(requestId: string) { this.pendingInputs.delete(requestId); }
   hasRequest(requestId: string) { return this.pendingInputs.has(requestId); }
   pendingRequests() { return [...this.pendingInputs.keys()]; }
@@ -236,6 +260,7 @@ export class Normalizer {
       case 'rate_limit_event': {
         const part = quotaFromEvent(m);
         if (Object.keys(part).length) this.onQuota(part);
+        this.onLimit(m.rate_limit_info ?? {});
         break;
       }
       case 'control_request': {
@@ -272,6 +297,9 @@ export class Normalizer {
       case 'task_started':
         if (m.task_id && m.tool_use_id) this.agentOfTask.set(m.task_id, m.tool_use_id);
         break;
+      case 'task_progress':
+        if (m.tool_use_id) { this.seen(m.tool_use_id); if (m.usage?.total_tokens) this.tokens.set(m.tool_use_id, Number(m.usage.total_tokens)); }
+        break;
       case 'task_notification':
         if (m.tool_use_id && m.status) this.leave(m.tool_use_id, m.status === 'completed', m.usage);
         break;
@@ -284,8 +312,11 @@ export class Normalizer {
     this.emit({ k: 'leave', who: id, ok, tokens: Number(usage?.total_tokens ?? 0), tools: Number(usage?.tool_uses ?? 0), ms: Number(usage?.duration_ms ?? 0) });
   }
 
+  private seen(who: string) { this.lastSeen.set(who, Date.now()); }
+
   private stream(m: Json) {
     const who: string = m.parent_tool_use_id ?? 'chef';
+    this.seen(who);
     const e = m.event ?? {};
     if (e.type === 'content_block_start') {
       const b = e.content_block ?? {};
@@ -304,6 +335,7 @@ export class Normalizer {
 
   private assistant(m: Json) {
     const who: string = m.parent_tool_use_id ?? 'chef';
+    this.seen(who);
     const content = Array.isArray(m.message?.content) ? m.message.content : [];
     for (const c of content as Json[]) {
       if (c.type === 'text' && String(c.text ?? '').trim()) {
@@ -317,6 +349,7 @@ export class Normalizer {
           const type = String(input.subagent_type ?? '');
           const role = roleOfType(type);
           this.present.add(c.id);
+          this.seen(c.id);
           this.emit({ k: 'hire', id: c.id, role, type, name: this.pickName(role), task: cut(input.description || ROLES[role].label, 48), prompt: cut(input.prompt, 2000) });
         } else if (name === 'SubagentHandback') {
           this.reported.add(who);

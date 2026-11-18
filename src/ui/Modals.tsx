@@ -2,10 +2,9 @@
 // les missions précédentes, les réglages, et les petites notifications.
 import { useMemo } from 'react';
 import { sfx } from '../audio/sfx.ts';
-import { savePref, useOffice } from '../state/store.ts';
-import { applySound } from '../audio/sound.ts';
+import { useOffice } from '../state/store.ts';
 import { FileList } from './Panel.tsx';
-import { fmtDate, fmtDuration, plural, tilde } from './format.ts';
+import { fmtDate, fmtDuration, plural } from './format.ts';
 import { mdToHtml } from './md.ts';
 import { tidy } from './tidy.ts';
 
@@ -148,52 +147,6 @@ export function History() {
   );
 }
 
-
-export function SettingsPanel() {
-  const open = useOffice((s) => s.settingsOpen);
-  const settings = useOffice((s) => s.settings);
-  const send = useOffice((s) => s.send);
-  const claude = useOffice((s) => s.claude);
-  const dir = useOffice((s) => s.dir);
-  const voiceOn = useOffice((s) => s.voiceOn);
-  const cameraAuto = useOffice((s) => s.cameraAuto);
-  if (!open) return null;
-  const close = () => useOffice.setState({ settingsOpen: false });
-  return (
-    <div className="modal-back" onClick={close}>
-      <div className="modal settings" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head"><b>Réglages du bureau</b><button className="close" onClick={close} aria-label="Fermer">×</button></div>
-        <div className="modal-body">
-          <div className="field">
-            <span>Les permissions</span>
-            <label className="radio"><input type="radio" checked={settings.permission === 'auto'} onChange={() => send({ t: 'settings', settings: { permission: 'auto' } })} /> L’équipe décide seule, et lève la main pour les gestes risqués</label>
-            <label className="radio"><input type="radio" checked={settings.permission === 'ask'} onChange={() => send({ t: 'settings', settings: { permission: 'ask' } })} /> Elle demande avant chaque commande</label>
-          </div>
-          <div className="field">
-            <span>Le spectacle</span>
-            <label className="radio"><input type="checkbox" checked={voiceOn} onChange={(e) => { useOffice.setState({ voiceOn: e.target.checked }); savePref('voice', e.target.checked); applySound(useOffice.getState().sound); }} /> La voix de Max (« C’est parti ! », « Mission accomplie ! », la visite guidée)</label>
-            <label className="radio"><input type="checkbox" checked={cameraAuto} onChange={(e) => { useOffice.setState({ cameraAuto: e.target.checked }); savePref('cameraAuto', e.target.checked); }} /> En mode tournage, la caméra suit l’action toute seule</label>
-          </div>
-          <p className="small muted">Les réglages comptent pour la prochaine mission. L’équipe ne travaille que dans le dossier de la mission, et ne lance jamais rien hors du bureau sans te demander.</p>
-          {claude?.found && <p className="small muted">Claude Code {claude.version} · {tilde(dir)}</p>}
-          <div className="keys">
-            <b>Raccourcis</b>
-            <span><kbd>V</kbd> cadre vertical (reel)</span>
-            <span><kbd>F</kbd> mode tournage</span>
-            <span><kbd>C</kbd> caméra auto</span>
-            <span><kbd>T</kbd> visite guidée</span>
-            <span><kbd>J</kbd> jukebox</span>
-            <span><kbd>N</kbd> jour, soir, nuit</span>
-            <span><kbd>M</kbd> son</span>
-            <span><kbd>H</kbd> missions précédentes</span>
-            <span><kbd>Échap</kbd> fermer, sortir du tournage</span>
-            <span>🥚 Il y a un code secret… (pense aux vieux jeux vidéo)</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function Toasts() {
   const toasts = useOffice((s) => s.toasts);

@@ -53,11 +53,13 @@ function broadcast(m: ServerMsg) {
 }
 
 const bureau = new Bureau(claude, broadcast, process.env.BUREAU_DIR);
+bureau.hookUrl = `http://${HOST}:${PORT}/hook`;
 await bureau.init();
 
 // ── Le serveur web (le bureau compilé) ──
 const server = http.createServer(async (req, res) => {
   const url0 = new URL(req.url ?? '/', 'http://x');
+  if (url0.pathname === '/hook') { await hook(req, res); return; }
   if (url0.pathname.startsWith('/apercu/')) { await preview(url0, res); return; }
   if (DEV) { res.writeHead(404).end(`Mode développement : le bureau est sur http://localhost:${DEV_PORT}`); return; }
   try {
@@ -79,6 +81,20 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(500).end('Le bureau n’est pas compilé : lance « npm start ».');
   }
 });
+
+/**
+ * /hook : le garde-fou de l'équipe (server/hook.ts, lancé par Claude Code avant chaque appel surveillé).
+ * Seulement en POST, depuis cette machine, avec le jeton secret de la séance ; jamais depuis un navigateur.
+ */
+async function hook(req: http.IncomingMessage, res: http.ServerResponse) {
+  const token = String(req.headers['x-bureau-hook'] ?? '');
+  if (req.method !== 'POST' || req.headers.origin || !bureau.hookAllowed(token)) { res.writeHead(403).end(); return; }
+  let body = '';
+  for await (const chunk of req) { body += chunk; if (body.length > 2_000_000) { res.writeHead(413).end(); return; } }
+  let reply;
+  try { reply = await bureau.onHook(JSON.parse(body)); } catch (e) { reply = { exit: 2, stderr: `Le bureau n’a pas pu vérifier cet appel : ${e instanceof Error ? e.message : e}` }; }
+  res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(reply));
+}
 
 /** /apercu/<mission>/<chemin> : un fichier de la mission, dans le bac à sable. */
 async function preview(url: URL, res: http.ServerResponse) {
@@ -180,6 +196,9 @@ async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
     }
     case 'settings':
       bureau.setSettings(m.settings ?? {});
+      break;
+    case 'relaunch':
+      bureau.relaunch(str(m.who, 100));
       break;
   }
 }

@@ -5,7 +5,7 @@ import { countStats, emptyStats, normRole } from '../../shared/activity.ts';
 import { defaultSettings } from '../../shared/settings.ts';
 import { setPlaces } from '../engine/layout.ts';
 import type {
-  ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, VersionInfo,
+  ActKind, ClaudeInfo, ClientMsg, FileInfo, MissionInfo, MissionStats, OfficeEvent, PlanItem, Quota, Role, ServerMsg, Settings, TeamEntry, TelegramStatus, VersionInfo,
 } from '../../shared/protocol.ts';
 import { sfx } from '../audio/sfx.ts';
 import { say } from '../audio/voice.ts';
@@ -65,6 +65,7 @@ interface S {
   dir: string;
   settings: Settings;
   quota: Quota | null;
+  telegram: TelegramStatus | null;
   missions: MissionInfo[];
   mission: MissionInfo | null;
   /** vrai pendant une rediffusion (ou la démo) */
@@ -139,6 +140,7 @@ export const useOffice = create<S>((set, get) => ({
   dir: '',
   settings: defaultSettings(),
   quota: null,
+  telegram: null,
   missions: [],
   mission: null,
   replaying: false,
@@ -228,6 +230,9 @@ export const useOffice = create<S>((set, get) => ({
         break;
       case 'quota':
         set({ quota: m.quota });
+        break;
+      case 'telegram':
+        set({ telegram: m.status });
         break;
       case 'settings':
         set({ settings: m.settings });
