@@ -15,6 +15,7 @@ import type { ClientMsg, ServerMsg } from '../shared/protocol.ts';
 import { Bureau } from './bureau.ts';
 import { findClaude } from './claude.ts';
 import { openPath } from './opener.ts';
+import { html, Telegram } from './telegram.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
@@ -55,6 +56,26 @@ function broadcast(m: ServerMsg) {
 const bureau = new Bureau(claude, broadcast, process.env.BUREAU_DIR);
 bureau.hookUrl = `http://${HOST}:${PORT}/hook`;
 await bureau.init();
+
+// Telegram : les alertes cochées dans l'onglet Suivi, et tes réponses à Max
+const telegram = new Telegram({
+  onMessage: (text) => {
+    if (!bureau.current) return 'Aucune demande en cours : écris /demande &lt;projet&gt; &lt;texte&gt;.';
+    bureau.say(text);
+    return 'Transmis à Max ✅';
+  },
+  onDemande: (project, text) => bureau.remoteDemande(project, text),
+  onStatus: () => bureau.statusText(),
+  onStop: () => { bureau.stop(); return 'J’arrête l’équipe. ⏹'; },
+  onStatusChange: (status) => broadcast({ t: 'telegram', status }),
+  log: (msg) => console.log(`  ·  ${msg}`),
+});
+bureau.onNotify = (kind, text) => {
+  if (!bureau.settings.follow.alerts[kind] || !telegram.status().linked) return;
+  const icon = { crash: '🔴', question: '🙋', pause: '☕', done: '✅', blocked: '🟠', model: '🔁' }[kind];
+  void telegram.send(`${icon} ${html(text)}`);
+};
+telegram.start();
 
 // ── Le serveur web (le bureau compilé) ──
 const server = http.createServer(async (req, res) => {
@@ -138,6 +159,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => clients.delete(ws));
   const send = (m: ServerMsg) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m));
   send({ ...bureau.hello(), build: BUILD } as ServerMsg);
+  send({ t: 'telegram', status: telegram.status() });
   ws.on('message', async (data) => {
     let m: ClientMsg;
     try { m = JSON.parse(String(data)); } catch { return; }
@@ -242,6 +264,15 @@ async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
     case 'validate':
       bureau.say(m.ok ? 'Valider' : `Modifier : ${str(m.text, 4000)}`);
       break;
+    case 'tg_token':
+      await telegram.setToken(str(m.token, 200));
+      break;
+    case 'tg_test':
+      await telegram.test();
+      break;
+    case 'tg_unlink':
+      await telegram.unlink();
+      break;
     case 'relaunch':
       bureau.relaunch(str(m.who, 100));
       break;
@@ -275,6 +306,7 @@ listen(PORT);
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
+    telegram.stop();
     bureau.shutdown();
     setTimeout(() => process.exit(0), 300);
   });

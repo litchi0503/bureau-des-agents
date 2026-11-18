@@ -655,6 +655,8 @@ export class Bureau {
       this.record(cur, { k: 'say', who: 'chef', text: q });
       cur.lastChefText = q;
       this.notify('question', `Max : ${q}`);
+    } else if (!stopped && ok && (questionCount(m.final ?? '') > 0 || /À valider\s*:/i.test(m.final ?? '') || /\?\s*$/.test((m.final ?? '').trim()))) {
+      this.notify('question', `Max (${m.title}) :\n${(m.final ?? '').slice(0, 3000)}`);
     } else if (!stopped) this.notify(ok ? 'done' : 'crash', ok ? `Demande terminée : ${m.title}` : `La demande « ${m.title} » s’est mal terminée.`);
     this.broadcast({ t: 'mission', mission: m });
     this.save();
@@ -1037,6 +1039,31 @@ export class Bureau {
     const current = (await git(proj.path, ['branch', '--show-current'])).out;
     const merge = proj.commands.find((c) => c.name === 'Merge' && c.confirmed)?.cmd;
     return { access: proj.access, base: proj.base, work: cur.mission.branch ?? '', forbidden: proj.forbidden, current, mergeScript: merge?.replace(/^(npm run|pnpm|yarn|bash|sh)\s+/, '') };
+  }
+
+  /** Où en est l'équipe (pour /status sur Telegram). */
+  statusText(): string {
+    const cur = this.current;
+    const p = this.state.pause;
+    if (!cur) return p ? `☕ Pause café : reprise ${whenFr(p.resumeAt)}.` : 'Personne au bureau : aucune demande en cours.';
+    const hires = cur.log.filter((l) => l.ev.k === 'hire').map((l) => l.ev as Extract<OfficeEvent, { k: 'hire' }>);
+    const present = cur.live?.norm.present ?? new Set<string>();
+    const lines = hires.filter((h) => present.has(h.id)).map((h) => `• ${h.name} (${ROLES[normRole(h.role)].label}) : ${cur.states.get(h.id) === 'blocked' ? 'bloqué' : cur.states.get(h.id) === 'queued' ? 'attend une place' : 'travaille'} · ${h.task}`);
+    const q = this.quota;
+    return `<b>${cur.mission.title}</b> · ${cur.mission.status === 'working' ? 'en cours' : cur.mission.status === 'done' ? 'terminée' : 'arrêtée'}${p ? ' · ☕ pause café' : ''}\n${lines.join('\n') || 'Max travaille seul.'}${q ? `\nÉnergie : 5 h ${Math.round(q.fiveHour * 100)} %${q.sevenDay !== undefined ? `, semaine ${Math.round(q.sevenDay * 100)} %` : ''}` : ''}`;
+  }
+
+  /** /demande <projet> <texte> (Telegram) : lancée si le projet est libre, sinon rangée dans son carnet. */
+  async remoteDemande(name: string, text: string): Promise<string> {
+    const n = name.toLowerCase();
+    const p = this.projects.find((x) => x.name.toLowerCase() === n || x.id === name) ?? this.projects.find((x) => x.name.toLowerCase().startsWith(n));
+    if (!p) return `Projet inconnu. Les projets : ${this.projects.map((x) => x.name).join(', ') || 'aucun (ajoute-en dans le bureau)'}.`;
+    if (this.current?.mission.status === 'working') {
+      const row = await this.carnetAdd(p, text, this.current.mission.projectId === p.id ? this.current.mission.title : 'une autre demande');
+      return `L’équipe est occupée : « ${row.title} » attend dans le carnet de ${p.name} (${row.id}).`;
+    }
+    await this.start(text, { projectId: p.id });
+    return `C’est parti sur ${p.name} : Max lit ta demande.`;
   }
 
   // ── Les projets ──

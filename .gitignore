@@ -6,3 +6,6 @@ dist/
 .env.*
 .vscode/
 .idea/
+
+# Telegram : le token reste hors du dépôt (~/.config/bureau-des-agents/telegram.json), jamais ici
+telegram.json

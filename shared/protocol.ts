@@ -230,6 +230,10 @@ export type ClientMsg =
   | { t: 'map_update'; projectId: string }
   /** les boutons « Valider » et « Modifier » (cahier des charges, plan, maquette) */
   | { t: 'validate'; ok: boolean; text?: string }
+  /** Telegram : le token (étape 2), le message de test (étape 4), délier */
+  | { t: 'tg_token'; token: string }
+  | { t: 'tg_test' }
+  | { t: 'tg_unlink' }
   /** relancer un agent planté (bouton « Relancer » de sa fiche) */
   | { t: 'relaunch'; who: string };
 
