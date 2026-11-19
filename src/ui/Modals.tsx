@@ -2,6 +2,7 @@
 // les missions précédentes, les réglages, et les petites notifications.
 import { useMemo } from 'react';
 import { sfx } from '../audio/sfx.ts';
+import { resumeMission } from '../net/link.ts';
 import { useOffice } from '../state/store.ts';
 import { FileList } from './Panel.tsx';
 import { fmtDate, fmtDuration, plural } from './format.ts';
@@ -137,6 +138,7 @@ export function History() {
               </div>
               <div className="row">
                 <button className="btn small" title="Rejoue la mission (sans relancer l’équipe) : parfait pour filmer" onClick={() => { sfx('click'); close(); send({ t: 'replay', missionId: m.id }); }}>▶ Rejouer</button>
+                {connection === 'live' && m.status !== 'working' && <button className="btn small primary" title="Rouvre la séance de Max : écris-lui comme avant" onClick={() => { sfx('click'); close(); resumeMission(m.id); }}>↩ Reprendre</button>}
                 <button className="btn small ghost" onClick={() => send({ t: 'open', missionId: m.id })}>Dossier</button>
               </div>
             </div>
@@ -147,6 +149,34 @@ export function History() {
   );
 }
 
+
+/** « Reprendre » impossible : la séance n'existe plus. On propose une nouvelle demande qui reprend son contexte. */
+export function ResumeFailed() {
+  const r = useOffice((s) => s.resumeFailed);
+  const send = useOffice((s) => s.send);
+  const busy = useOffice((s) => s.busySince !== null);
+  if (!r) return null;
+  const close = () => useOffice.setState({ resumeFailed: null });
+  return (
+    <div className="modal-back" onClick={close}>
+      <div className="modal small-modal" role="alertdialog" aria-labelledby="rf-title" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><b id="rf-title">Je ne peux pas reprendre « {r.title} »</b><button className="close" onClick={close} aria-label="Fermer">×</button></div>
+        <div className="modal-body">
+          <p>{r.reason}</p>
+          <p className="small muted">Tu peux lancer une nouvelle demande : Max lira ce qui avait été demandé, son dernier message et le dossier de la mission.</p>
+          <div className="row">
+            <button className="btn" onClick={close}>Fermer</button>
+            <button className="btn primary" disabled={busy} onClick={() => {
+              sfx('click');
+              send({ t: 'new' });
+              useOffice.setState({ resumeFailed: null, contextFrom: { missionId: r.missionId, title: r.title }, draft: ' ' });
+            }}>Nouvelle demande avec le contexte</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function Toasts() {
   const toasts = useOffice((s) => s.toasts);

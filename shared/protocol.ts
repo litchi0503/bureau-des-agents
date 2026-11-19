@@ -46,6 +46,10 @@ export interface MissionInfo {
   projectId?: string;
   /** la branche de travail de la demande (bureau/…) */
   branch?: string;
+  /** le numéro de la demande dans le carnet du projet (D-001…) */
+  requestId?: string;
+  /** « Nouvelle demande avec le contexte » : la demande dont elle reprend le contexte */
+  contextFrom?: string;
 }
 
 /**
@@ -68,7 +72,7 @@ export type OfficeEvent =
   | { k: 'leave'; who: string; ok: boolean; tokens: number; tools: number; ms: number }
   | { k: 'file'; file: FileInfo; isNew: boolean }
   /** full = la bulle montre l'action en entier (sinon, on répond dans le panneau, où tout est affiché) */
-  | { k: 'ask'; who: string; requestId: string; tool: string; label: string; detail: string; full: boolean }
+  | { k: 'ask'; who: string; requestId: string; tool: string; label: string; detail: string; full: boolean; scoped?: boolean }
   | { k: 'ask_done'; requestId: string; allow: boolean; cancelled?: boolean }
   | { k: 'end'; ok: boolean; text: string; ms: number; stopped?: boolean }
   /** une note du bureau dans le journal d'un agent (un appel refusé par le garde-fou, une relance…) */
@@ -83,7 +87,7 @@ export type OfficeEvent =
  * L'état d'un agent, pour sa pastille : il travaille, attend ta réponse (ou une place libre), fait la pause café,
  * est bloqué (rien depuis longtemps), a planté, ou a fini.
  */
-export type AgentState = 'working' | 'waiting' | 'queued' | 'pause' | 'blocked' | 'crashed' | 'done';
+export type AgentState = 'working' | 'waiting' | 'queued' | 'pause' | 'blocked' | 'crashed' | 'done' | 'interrupted';
 
 /** Un événement daté, tel qu'il est enregistré. */
 export interface Logged { at: number; ev: OfficeEvent }
@@ -108,7 +112,8 @@ export interface HistEntry {
   prompt?: string;
   at: number;
   endAt?: number;
-  status: 'working' | 'done' | 'crashed';
+  /** interrupted : le bureau a été coupé pendant qu'il travaillait */
+  status: 'working' | 'done' | 'crashed' | 'interrupted';
   model?: string;
   effort?: string;
   switched?: string;
@@ -168,6 +173,8 @@ export interface ProjectInfo {
   author?: string;
   hookOk?: boolean;
   map?: { commit: string; at: number } | null;
+  /** enchaîner les demandes du carnet (activé si absent) */
+  chain?: boolean;
   busy?: boolean;
   missionId?: string;
 }
@@ -192,6 +199,8 @@ export interface CarnetInfo {
   tests: number;
   /** la dernière chose que Max demande de valider */
   toValidate: string;
+  /** les demandes passées du carnet (N° → mission), pour « Rejouer » et « Reprendre » */
+  missions: Record<string, { missionId: string; working: boolean }>;
 }
 
 /** La pause café en cours : quelle demande, et quand elle reprend (ms). */
@@ -202,10 +211,13 @@ export interface TelegramStatus { linked: boolean; step: 'none' | 'token' | 'sta
 
 // ── Navigateur → serveur ──
 export type ClientMsg =
-  | { t: 'start'; prompt: string; bypass?: boolean; projectId?: string }
+  | { t: 'start'; prompt: string; bypass?: boolean; projectId?: string; contextFrom?: string }
+  /** rouvrir la séance d'une mission terminée (« Reprendre ») */
+  | { t: 'resume'; missionId: string }
   | { t: 'say'; text: string }
   | { t: 'stop' }
-  | { t: 'answer'; requestId: string; allow: boolean }
+  /** scope : « Oui pour cette demande » (les permissions demandées par le bureau) */
+  | { t: 'answer'; requestId: string; allow: boolean; scope?: 'once' | 'request' }
   | { t: 'new' }
   | { t: 'open'; missionId: string; file?: string }
   /** ouvre le dossier du bureau (ou son règlement) */
@@ -256,4 +268,6 @@ export type ServerMsg =
   | { t: 'projects'; list: ProjectInfo[] }
   | { t: 'browse'; path: string; parent: string | null; dirs: string[] }
   | { t: 'carnet'; carnet: CarnetInfo }
-  | { t: 'toast'; kind: 'info' | 'error'; text: string };
+  | { t: 'toast'; kind: 'info' | 'error'; text: string }
+  /** la séance d'une mission n'est plus reprenable : le bureau propose une nouvelle demande avec son contexte */
+  | { t: 'resume_failed'; missionId: string; title: string; reason: string };

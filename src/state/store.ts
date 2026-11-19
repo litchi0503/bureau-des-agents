@@ -59,7 +59,7 @@ export interface ChefView {
   acts: ActView[];
 }
 
-export interface AskView { requestId: string; who: string; tool: string; label: string; detail: string; full: boolean; at: number }
+export interface AskView { requestId: string; who: string; tool: string; label: string; detail: string; full: boolean; at: number; scoped?: boolean }
 
 export interface FeedLine { id: number; at: number; who: string; text: string; kind: 'user' | 'chef' | 'hire' | 'act' | 'report' | 'file' | 'ask' | 'end' | 'error' }
 
@@ -136,6 +136,10 @@ interface S {
   /** la visite guidée en cours (le texte que Max dit) */
   tour: { step: number; text: string } | null;
   historyOpen: boolean;
+  /** « Reprendre » impossible (séance effacée) : le bureau propose une nouvelle demande avec le contexte */
+  resumeFailed: { missionId: string; title: string; reason: string } | null;
+  /** la prochaine demande reprend le contexte de cette mission */
+  contextFrom: { missionId: string; title: string } | null;
   settingsOpen: boolean;
   vertical: boolean;
   /** écran en hauteur (téléphone) : même mise en page que le cadre vertical */
@@ -211,6 +215,8 @@ export const useOffice = create<S>((set, get) => ({
   cameraAuto: pref('cameraAuto', true),
   tour: null,
   historyOpen: false,
+  resumeFailed: null,
+  contextFrom: null,
   settingsOpen: false,
   vertical: pref('vertical', false),
   portrait: typeof window !== 'undefined' && window.innerWidth / Math.max(1, window.innerHeight) < 0.8,
@@ -305,6 +311,9 @@ export const useOffice = create<S>((set, get) => ({
         break;
       case 'toast':
         get().toast(m.kind, m.text);
+        break;
+      case 'resume_failed':
+        set({ resumeFailed: { missionId: m.missionId, title: m.title, reason: m.reason } });
         break;
       case 'replay':
         // géré par le lecteur (net/replay.ts)
@@ -426,7 +435,7 @@ export const useOffice = create<S>((set, get) => ({
         break;
       }
       case 'ask': {
-        const ask: AskView = { requestId: ev.requestId, who: ev.who, tool: ev.tool, label: ev.label, detail: ev.detail, full: ev.full, at };
+        const ask: AskView = { requestId: ev.requestId, who: ev.who, tool: ev.tool, label: ev.label, detail: ev.detail, full: ev.full, at, ...(ev.scoped ? { scoped: true } : {}) };
         set({ asks: { ...s.asks, [ev.requestId]: ask }, feed: feed(agentName(ev.who), ev.label, 'ask') });
         if (live) { sfx('ask'); void say('feu-vert', true); }
         break;
@@ -459,6 +468,10 @@ export const useOffice = create<S>((set, get) => ({
       case 'state':
         if (ev.state === 'crashed' || ev.state === 'blocked') set({ feed: feed(agentName(ev.who), ev.reason || (ev.state === 'crashed' ? 'a planté' : 'est bloqué'), 'error') });
         if (live && ev.state === 'crashed') sfx('error');
+        // le bureau a été coupé pendant la demande : elle ne travaille plus (on peut la reprendre)
+        if (ev.state === 'interrupted' && ev.who === 'chef') {
+          set({ busySince: null, workMs: s.workMs + (s.busySince ? Math.max(0, at - s.busySince) : 0), feed: feed('Max', 'Interrompu : le bureau a été redémarré.', 'end') });
+        }
         break;
       case 'model':
         if (ev.from) set({ feed: feed(agentName(ev.who), `passe de ${ev.from} à ${ev.model}${ev.reason ? ` (${ev.reason})` : ''}`, 'act') });

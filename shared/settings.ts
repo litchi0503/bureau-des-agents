@@ -109,6 +109,8 @@ export interface Settings {
   permission: 'auto' | 'ask';
   guard: GuardSettings;
   follow: FollowSettings;
+  /** demandes de rangement, de docs ou de git : Max et la Rédaction passent sur Sonnet (s'ils sont réglés plus haut) */
+  lightSonnet: boolean;
 }
 
 export const DEFAULT_GUARD: GuardSettings = { max5h: 80, maxWeek: 80, liftDay: 6, liftHour: 0, liftOnlyWeekend: true, budget: 0, allowBypass: false };
@@ -120,7 +122,7 @@ export const DEFAULT_FOLLOW: FollowSettings = {
 export const cloneTeam = (t: Record<Pole, PoleSettings>) => JSON.parse(JSON.stringify(t)) as Record<Pole, PoleSettings>;
 
 export function defaultSettings(): Settings {
-  return { team: cloneTeam(PRESET_TEAMS.equilibre), permission: 'auto', guard: { ...DEFAULT_GUARD }, follow: { ...DEFAULT_FOLLOW, alerts: { ...DEFAULT_FOLLOW.alerts } } };
+  return { team: cloneTeam(PRESET_TEAMS.equilibre), permission: 'auto', guard: { ...DEFAULT_GUARD }, follow: { ...DEFAULT_FOLLOW, alerts: { ...DEFAULT_FOLLOW.alerts } }, lightSonnet: true };
 }
 
 const POLE_KEYS: Pole[] = ['chef', 'recherche', 'design', 'code', 'relecture', 'redaction'];
@@ -157,6 +159,7 @@ export function mergeSettings(cur: Settings, p: unknown): Settings {
   return {
     team,
     permission: o.permission === 'ask' || o.permission === 'auto' ? o.permission : cur.permission,
+    lightSonnet: bool(o.lightSonnet, cur.lightSonnet ?? true),
     guard: {
       max5h: num(g.max5h, STEP5, cur.guard.max5h),
       maxWeek: num(g.maxWeek, STEP5, cur.guard.maxWeek),
@@ -178,4 +181,15 @@ export function mergeSettings(cur: Settings, p: unknown): Settings {
       },
     },
   };
+}
+
+/** Le rang d'un modèle (plus grand = plus puissant), pour ne jamais « descendre » vers un modèle plus fort. */
+export const modelRank = (m: string) => ({ haiku: 1, sonnet: 2, opus: 3, fable: 4 } as Record<string, number>)[m] ?? 0;
+
+/** Une demande de rangement, de docs ou de git (Max et la Rédaction peuvent passer sur Sonnet). */
+export function lightRequest(text: string): boolean {
+  const t = text.toLowerCase();
+  const light = /\b(rang(e|er|ement)|au propre|nettoie|nettoyer|nettoyage|docs?|documentation|readme|changelog|git|branches?|commits?|tags?|release notes?)\b/.test(t);
+  const code = /\b(code|coder|fonction|bug|corrige|corriger|impl[ée]mente|page|écran|ecran|api|endpoint|composant|migration|test(s)?)\b/.test(t);
+  return light && !code;
 }

@@ -36,7 +36,9 @@ gardent l'extension `.ts`, et rien qui demande une vraie compilation (pas d'`enu
 
 ## Tester sans dépenser l'abonnement
 
-Une mission enregistrée se rejoue à l'identique (`H`, puis « Rejouer »), et sans serveur le bureau passe en démo. Dans la console du
+Le faux `claude` (`test/fake/claude.mjs`) parle stream-json et garde ses séances dans `$CLAUDE_CONFIG_DIR/projects/` : `test/bureau.test.ts`
+s'en sert pour la reprise, les dossiers des demandes, l'enchaînement et le hook (et `CLAUDE_BIN=test/fake/claude.mjs npm run serve` pour
+voir l'interface sans rien dépenser). Une mission enregistrée se rejoue à l'identique (`H`, puis « Rejouer »), et sans serveur le bureau passe en démo. Dans la console du
 navigateur, `window.__bureau` donne accès au store, au monde, à la caméra et à `playReplay(mission, log, vitesse)`.
 Pour filmer le bureau image par image (un script de capture qui pilote l'horloge), `window.__CAPTURE` fait dessiner chaque image et
 fournit le rythme de la musique (voir la boucle de `Office.tsx`).
