@@ -10,6 +10,7 @@ import { interact } from './interact.ts';
 import { H, W } from '../engine/layout.ts';
 import { sfx } from '../audio/sfx.ts';
 import { useOffice, type AskView } from '../state/store.ts';
+import { pastilleOf } from './pastille.ts';
 
 const ICON: Record<ActKind, string> = {
   search: '🔎', web: '🌐', read: '📖', write: '✍️', edit: '✏️', bash: '💻', plan: '📋', skill: '🎓', mcp: '🔌', other: '⚙️',
@@ -147,7 +148,7 @@ export function Office() {
   };
   const hover = useRef<Hit | null>(null);
   const onMove = (e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest('.bubble.ask')) return;
+    if ((e.target as HTMLElement).closest('.bubble.ask, .pastille')) return;
     const p = toWorld(e);
     const h = hitAt(world, p.x, p.y);
     hover.current = h;
@@ -162,7 +163,7 @@ export function Office() {
   };
   const onLeave = () => { if (tip.current) tip.current.style.opacity = '0'; hover.current = null; };
   const onClick = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('.bubble.ask')) return;
+    if ((e.target as HTMLElement).closest('.bubble.ask, .pastille')) return;
     const p = toWorld(e);
     const h = hitAt(world, p.x, p.y);
     if (h) interact(h);
@@ -226,6 +227,11 @@ function Bubbles() {
   const order = useOffice((s) => s.order);
   const filming = useOffice((s) => s.filming);
   const vertical = useOffice((s) => s.vertical || s.portrait);
+  const pause = useOffice((s) => s.pause);
+  const pills = useOffice((s) => s.settings.follow.pastilles);
+  // pour la pastille : tout le store (le suivi, les demandes, les agents), relu à chaque rendu
+  const st = useOffice.getState();
+  useOffice((s) => s.track);
 
   // Seules les actions les plus fraîches ont une bulle complète (les autres, une simple icône),
   // et jamais deux bulles qui se chevauchent : on les choisit de la plus récente à la plus ancienne.
@@ -260,6 +266,9 @@ function Bubbles() {
     if (!isChef && !a && actor) return { ...base, mode: filming ? 'none' : 'tag' };
     const ask = askOf(id);
     if (ask) return { ...base, mode: 'ask', ask };
+    if (isChef && pause) {
+      return { ...base, mode: 'full', text: `Pause café : reprise vers ${new Date(pause.resumeAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`, icon: '☕' };
+    }
     if (isChef) {
       const working = order.filter((k) => agents[k]?.status === 'working' || agents[k]?.status === 'reporting').length;
       if (chef.typing) return { ...base, mode: 'full', text: lastSentence(chef.typing, 70) };
@@ -278,7 +287,7 @@ function Bubbles() {
     return { ...base, mode: filming ? 'none' : 'tag' };
   };
 
-  return <>{ids.map((id) => <Bubble key={id} id={id} v={view(id)} />)}</>;
+  return <>{ids.map((id) => <Bubble key={id} id={id} v={view(id)} pill={pills && !filming ? pastilleOf(id, st, now) : null} />)}</>;
 }
 
 function useNow(every: number) {
@@ -304,13 +313,19 @@ const firstSentence = (s: string, n = 96) => {
   return one.length > n ? one.slice(0, n - 1) + '…' : one;
 };
 
-function Bubble({ id, v }: { id: string; v: View }) {
+function Bubble({ id, v, pill }: { id: string; v: View; pill: ReturnType<typeof pastilleOf> }) {
   const ref = useCallback((el: HTMLDivElement | null) => {
     if (el) bubbleEls.set(id, el);
     else bubbleEls.delete(id);
   }, [id]);
+  const open = (e: React.MouseEvent) => { e.stopPropagation(); sfx('open'); useOffice.setState({ modal: { kind: 'agent', id } }); };
   return (
-    <div className={`bubble-anchor ${id === 'chef' ? 'is-chef' : ''}`} ref={ref} style={{ ['--c' as string]: v.color }}>
+    <div className={`bubble-anchor ${id === 'chef' ? 'is-chef' : ''} ${pill ? 'has-pill' : ''}`} ref={ref} style={{ ['--c' as string]: v.color }}>
+      {pill && (
+        <button className={`pastille st-${pill.state}`} style={{ ['--pc' as string]: pill.color }} onClick={open} title={`${v.name} : ${pill.text} (clique pour sa fiche)`}>
+          <i aria-hidden="true" />{pill.text}
+        </button>
+      )}
       {v.mode === 'ask' && v.ask ? <AskBubble ask={v.ask} name={v.name} />
         : v.mode === 'full' ? (
           <div className="bubble">

@@ -3,7 +3,7 @@ import { ROLES } from '../../shared/activity.ts';
 import type { Role } from '../../shared/protocol.ts';
 import { textWidth } from './font.ts';
 import { furniturePlacement } from './furniture.ts';
-import { BOARD, CLOCK, DOOR, FURNITURE, NEON, POSTER, T, WINDOWS, ZONES } from './layout.ts';
+import { BOARD, CLOCK, DOOR, FURNITURE, layoutVersion, NEON, POSTER, T, WINDOWS, ZONES } from './layout.ts';
 import type { World } from './world.ts';
 
 export type Hit =
@@ -11,23 +11,23 @@ export type Hit =
   | { kind: 'cat'; label: string }
   | { kind: 'object'; id: string; label: string; role?: Role };
 
-const ZONE_SIGN: Record<string, string> = { recherche: 'RECHERCHE', code: 'CODE', design: 'DESIGN', redaction: 'RÉDACTION', analyse: 'ANALYSE', chef: 'CHEF' };
+const ZONE_SIGN: Record<string, string> = { recherche: 'RECHERCHE', code: 'CODE', design: 'DESIGN', redaction: 'RÉDACTION', relecture: 'RELECTURE', chef: 'CHEF' };
 
 function furnitureLabel(id: string, kind: string, role?: Role): string {
   switch (kind) {
-    case 'desk': return `Un bureau du coin ${ROLES[role ?? 'renfort'].label}`;
-    case 'chair': return `Un poste du coin ${ROLES[role ?? 'renfort'].label}`;
+    case 'desk': return `Un bureau du pôle ${ROLES[role ?? 'renfort'].label}`;
+    case 'chair': return `Un poste du pôle ${ROLES[role ?? 'renfort'].label}`;
     case 'chefDesk': return 'Le bureau de Max : les rapports de l’équipe';
     case 'chefChair': return 'Le fauteuil de Max';
     case 'rack': return 'Le serveur : Claude Code et ton abonnement';
-    case 'printer': return 'L’imprimante : les rendus de la mission';
+    case 'printer': return 'L’imprimante du pôle Relecture : les rendus de la mission';
     case 'cooler': return 'La fontaine à eau';
-    case 'easel': return 'Le chevalet du studio design';
+    case 'easel': return 'Le chevalet et l’écran du pôle Design';
     case 'plantBig': case 'plantTall': case 'plantSmall': return 'Une plante (elle aime qu’on la chatouille)';
     case 'sofa': return 'Le canapé (la place préférée du chat)';
     case 'tableLow': return 'La table basse';
     case 'lamp': return 'Un lampadaire (clique pour l’éteindre)';
-    case 'shelf': return 'Les archives : les missions passées';
+    case 'shelf': return 'La bibliothèque : les missions passées';
     case 'coffee': return 'La machine à café';
     case 'bin': return 'La corbeille';
     case 'jukebox': return 'Le jukebox';
@@ -35,10 +35,18 @@ function furnitureLabel(id: string, kind: string, role?: Role): string {
   return id;
 }
 
-const placed = FURNITURE.map((f) => {
-  const p = furniturePlacement(f);
-  return { f, x: p.x, y: p.y, w: p.s.c.width, h: p.s.c.height, sortY: p.sortY };
-}).sort((a, b) => b.sortY - a.sortY);
+let placed: { f: (typeof FURNITURE)[number]; x: number; y: number; w: number; h: number; sortY: number }[] = [];
+let placedVersion = -1;
+function placedNow() {
+  if (placedVersion !== layoutVersion) {
+    placedVersion = layoutVersion;
+    placed = FURNITURE.map((f) => {
+      const p = furniturePlacement(f);
+      return { f, x: p.x, y: p.y, w: p.s.c.width, h: p.s.c.height, sortY: p.sortY };
+    }).sort((a, b) => b.sortY - a.sortY);
+  }
+  return placed;
+}
 
 const inRect = (x: number, y: number, r: { x: number; y: number; w: number; h: number }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 
@@ -53,7 +61,7 @@ export function hitAt(world: World, x: number, y: number): Hit | null {
   }
   if (world.cat.hit(x, y)) return { kind: 'cat', label: 'Pixel, le chat du bureau' };
   // les meubles
-  for (const p of placed) {
+  for (const p of placedNow()) {
     if (!inRect(x, y, { x: p.x + 1, y: p.y + 1, w: p.w - 2, h: p.h - 2 })) continue;
     // un pixel transparent du dessin ne compte pas : on regarde le meuble suivant
     return { kind: 'object', id: p.f.id, label: furnitureLabel(p.f.id, p.f.kind, p.f.role), role: p.f.role };

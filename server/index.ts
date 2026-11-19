@@ -5,7 +5,6 @@
 //   node server/index.ts            le bureau sur http://localhost:4848
 //   node server/index.ts --open     … et l'ouvre dans le navigateur
 //   node server/index.ts --dev      seulement le pont (le bureau est servi par Vite, port 5174)
-import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -15,6 +14,8 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMsg, ServerMsg } from '../shared/protocol.ts';
 import { Bureau } from './bureau.ts';
 import { findClaude } from './claude.ts';
+import { openPath } from './opener.ts';
+import { html, Telegram } from './telegram.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
@@ -53,11 +54,33 @@ function broadcast(m: ServerMsg) {
 }
 
 const bureau = new Bureau(claude, broadcast, process.env.BUREAU_DIR);
+bureau.hookUrl = `http://${HOST}:${PORT}/hook`;
 await bureau.init();
+
+// Telegram : les alertes cochées dans l'onglet Suivi, et tes réponses à Max
+const telegram = new Telegram({
+  onMessage: (text) => {
+    if (!bureau.current) return 'Aucune demande en cours : écris /demande &lt;projet&gt; &lt;texte&gt;.';
+    bureau.say(text);
+    return 'Transmis à Max ✅';
+  },
+  onDemande: (project, text) => bureau.remoteDemande(project, text),
+  onStatus: () => bureau.statusText(),
+  onStop: () => { bureau.stop(); return 'J’arrête l’équipe. ⏹'; },
+  onStatusChange: (status) => broadcast({ t: 'telegram', status }),
+  log: (msg) => console.log(`  ·  ${msg}`),
+});
+bureau.onNotify = (kind, text) => {
+  if (!bureau.settings.follow.alerts[kind] || !telegram.status().linked) return;
+  const icon = { crash: '🔴', question: '🙋', pause: '☕', done: '✅', blocked: '🟠', model: '🔁' }[kind];
+  void telegram.send(`${icon} ${html(text)}`);
+};
+telegram.start();
 
 // ── Le serveur web (le bureau compilé) ──
 const server = http.createServer(async (req, res) => {
   const url0 = new URL(req.url ?? '/', 'http://x');
+  if (url0.pathname === '/hook') { await hook(req, res); return; }
   if (url0.pathname.startsWith('/apercu/')) { await preview(url0, res); return; }
   if (DEV) { res.writeHead(404).end(`Mode développement : le bureau est sur http://localhost:${DEV_PORT}`); return; }
   try {
@@ -79,6 +102,20 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(500).end('Le bureau n’est pas compilé : lance « npm start ».');
   }
 });
+
+/**
+ * /hook : le garde-fou de l'équipe (server/hook.ts, lancé par Claude Code avant chaque appel surveillé).
+ * Seulement en POST, depuis cette machine, avec le jeton secret de la séance ; jamais depuis un navigateur.
+ */
+async function hook(req: http.IncomingMessage, res: http.ServerResponse) {
+  const token = String(req.headers['x-bureau-hook'] ?? '');
+  if (req.method !== 'POST' || req.headers.origin || !bureau.hookAllowed(token)) { res.writeHead(403).end(); return; }
+  let body = '';
+  for await (const chunk of req) { body += chunk; if (body.length > 2_000_000) { res.writeHead(413).end(); return; } }
+  let reply;
+  try { reply = await bureau.onHook(JSON.parse(body)); } catch (e) { reply = { exit: 2, stderr: `Le bureau n’a pas pu vérifier cet appel : ${e instanceof Error ? e.message : e}` }; }
+  res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(reply));
+}
 
 /** /apercu/<mission>/<chemin> : un fichier de la mission, dans le bac à sable. */
 async function preview(url: URL, res: http.ServerResponse) {
@@ -122,6 +159,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => clients.delete(ws));
   const send = (m: ServerMsg) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m));
   send({ ...bureau.hello(), build: BUILD } as ServerMsg);
+  send({ t: 'telegram', status: telegram.status() });
   ws.on('message', async (data) => {
     let m: ClientMsg;
     try { m = JSON.parse(String(data)); } catch { return; }
@@ -138,7 +176,7 @@ const str = (v: unknown, max = 20000) => (typeof v === 'string' ? v.slice(0, max
 async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
   switch (m.t) {
     case 'start':
-      await bureau.start(str(m.prompt));
+      await bureau.start(str(m.prompt), { bypass: m.bypass === true, projectId: m.projectId ? str(m.projectId, 80) : undefined });
       break;
     case 'say':
       bureau.say(str(m.text));
@@ -181,6 +219,63 @@ async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
     case 'settings':
       bureau.setSettings(m.settings ?? {});
       break;
+    case 'agent_log': {
+      const missionId = str(m.missionId, 40), who = str(m.who, 100);
+      const { entry, lines } = await bureau.history.agentLog(missionId, who);
+      send({ t: 'agent_log', missionId, who, entry, lines });
+      break;
+    }
+    case 'history_search': {
+      const q = str(m.q, 200), page = Math.max(0, Math.min(10000, Number(m.page) || 0));
+      send({ t: 'history_page', q, page, ...bureau.history.search(q, page) });
+      break;
+    }
+    case 'projects':
+      send({ t: 'projects', list: await bureau.projectList() });
+      break;
+    case 'project_add':
+      await bureau.addProject(str(m.path, 1000));
+      break;
+    case 'project_update':
+      await bureau.updateProject(str(m.id, 40), m.patch && typeof m.patch === 'object' ? m.patch : {});
+      break;
+    case 'project_remove':
+      await bureau.removeProject(str(m.id, 40));
+      break;
+    case 'browse':
+      send({ t: 'browse', ...(await bureau.browse(str(m.path, 1000))) });
+      break;
+    case 'carnet':
+      send({ t: 'carnet', carnet: await bureau.carnet(str(m.projectId, 40)) });
+      break;
+    case 'carnet_add': {
+      const p = bureau.project(str(m.projectId, 40));
+      if (!p) throw new Error('Ce projet n’existe plus.');
+      await bureau.start(str(m.text), { projectId: p.id });
+      send({ t: 'carnet', carnet: await bureau.carnet(p.id) });
+      break;
+    }
+    case 'carnet_launch':
+      await bureau.carnetLaunch(str(m.projectId, 40), str(m.id, 20));
+      break;
+    case 'map_update':
+      await bureau.start('Mets à jour la carte du projet (à partir du diff depuis son commit, ou fais-la si elle n’existe pas). Rien d’autre.', { projectId: str(m.projectId, 40) });
+      break;
+    case 'validate':
+      bureau.say(m.ok ? 'Valider' : `Modifier : ${str(m.text, 4000)}`);
+      break;
+    case 'tg_token':
+      await telegram.setToken(str(m.token, 200));
+      break;
+    case 'tg_test':
+      await telegram.test();
+      break;
+    case 'tg_unlink':
+      await telegram.unlink();
+      break;
+    case 'relaunch':
+      bureau.relaunch(str(m.who, 100));
+      break;
   }
 }
 
@@ -202,8 +297,7 @@ function listen(port: number) {
     console.log('  ⏹  Pour arrêter : Ctrl + C');
     console.log('');
     if (args.has('--open') && !DEV) {
-      const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-      execFile(opener, [url], () => {});
+      openPath(url);
     }
   });
 }
@@ -212,6 +306,7 @@ listen(PORT);
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
+    telegram.stop();
     bureau.shutdown();
     setTimeout(() => process.exit(0), 300);
   });

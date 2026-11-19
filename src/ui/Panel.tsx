@@ -53,7 +53,7 @@ function Welcome() {
         <h3>Comment ça marche</h3>
         <ol className="steps">
           <li><b>Tu dis à Max ce que tu veux</b>, au clavier ou à la voix.</li>
-          <li><b>Il fait le plan et appelle l’équipe</b> : chacun file à son poste (recherche, code, design, rédaction, analyse).</li>
+          <li><b>Il fait le plan et appelle l’équipe</b> : chacun file à son poste (recherche, design, code, relecture, rédaction).</li>
           <li><b>Tu les regardes bosser</b>, en vrai : chaque bulle, c’est ce que l’agent fait à cet instant.</li>
           <li><b>Ils te rendent le travail</b> : les fichiers arrivent dans « Les rendus » et dans ton dossier.</li>
         </ol>
@@ -72,6 +72,7 @@ function Welcome() {
           <div className="row">
             <button className="btn small" onClick={() => send({ t: 'open_root' })}>Ouvrir le dossier</button>
             <button className="btn small" onClick={() => send({ t: 'open_root', rules: true })}>Le règlement du bureau</button>
+            <button className="btn small" onClick={() => { sfx('open'); useOffice.setState({ modal: { kind: 'projects' } }); }}>📂 Projets</button>
           </div>
           <p className="small muted">Le règlement, c’est ce que l’équipe doit savoir sur toi : Max le lit avant chaque mission.</p>
         </section>

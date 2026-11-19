@@ -28,8 +28,10 @@ export function interact(hit: Hit) {
   const st = useOffice.getState();
   if (hit.kind === 'actor') {
     if (hit.id === 'chef') {
-      sfx('click');
       world.chef.happyUntil = world.time + 1.5;
+      // pendant une demande, sa fiche ; sinon, on lui parle
+      if (st.mission) { sfx('open'); useOffice.setState({ modal: { kind: 'agent', id: 'chef' } }); return; }
+      sfx('click');
       useOffice.setState({ draft: ' ' });
       return;
     }

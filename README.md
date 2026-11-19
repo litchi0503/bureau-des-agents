@@ -63,7 +63,19 @@ entreprise. Max le lit avant chaque mission, et l'équipe travaille pour toi, pa
   - L'imprimante : les fichiers rendus par l'équipe. La bibliothèque : tes missions passées.
   - Le serveur : Claude Code, le modèle, ton abonnement. L'horloge, la fenêtre (jour, soir, nuit)…
 - **Voir les sites créés par l'équipe dans un écran**, en version ordinateur ou téléphone, avec leur code et toutes leurs versions.
-- **Retrouver toute l'équipe** (👥) : les métiers, les outils Claude Code de chacun, et l'historique de tous les agents passés au bureau.
+- **Retrouver toute l'équipe** (👥) : les six pôles (Max, Recherche, Design, Code, Relecture, Rédaction), les outils Claude Code de
+  chacun, et l'historique de tous les agents passés au bureau, avec une recherche.
+- **Suivre chaque robot d'un coup d'œil** : une pastille au-dessus de sa tête (Travaille, Attend ta réponse, Pause café, Bloqué,
+  Planté, Terminé). Un clic ouvre sa fiche : modèle, puissance, durée, frise des états, journal, rapport, bouton « Relancer ».
+- **Régler l'équipe** (⚙️, onglet Équipe) : pour chaque pôle, le modèle, la puissance, le nombre de places et le modèle de repli
+  quand un quota est plein. Trois préréglages : Économe, Équilibré, Maximum.
+- **Protéger ton abonnement** (onglet Garde-fou) : plafonds de la fenêtre de 5 h et de la semaine, plafond levé le week-end,
+  budget par demande. Au plafond, Max fait une pause café et l'équipe reprend toute seule au reset.
+- **Travailler dans un dossier existant** (📂 Projets) : ton dépôt git, avec un accès réglé (lecture seule, code sur branche,
+  code + push), une branche `bureau/<demande>` par demande, des branches interdites, et le carnet de Max (les demandes, leurs
+  8 étapes, ses questions, tes validations).
+- **Recevoir Max sur Telegram** : ses questions, les plantages, les pauses café, la fin d'une demande ; tu réponds `1A 2B`, `OK`,
+  ou tu lances une demande avec `/demande`.
 - **Rejouer une mission** (`H`, puis « Rejouer ») : elle se remontre à l'identique, sans relancer l'équipe ni consommer ton abonnement.
 - **Mettre de la musique** au jukebox, écouter Max faire **la visite guidée** (`T`).
 - Et trouver les surprises : un chat, et un code secret bien connu des joueurs.
@@ -88,14 +100,21 @@ entreprise. Max le lit avant chaque mission, et l'équipe travaille pour toi, pa
 - **Tout reste chez toi.** Le bureau n'écoute que sur ton ordinateur (127.0.0.1), et aucun site web ne peut lancer ton équipe à ta place.
 - **Max est une vraie séance Claude Code**, lancée sans fenêtre dans le dossier de la mission (`~/Documents/Bureau des agents/Missions/`).
   Son équipe, ce sont de vrais sous-agents Claude Code, chacun avec seulement les outils de son métier.
-- **L'équipe ne sort pas du dossier de la mission** (mode restreint de Claude Code) : ni tes réglages ni tes autres agents ne s'invitent.
+- **L'équipe ne sort pas du dossier de la mission** (ou du projet) : mode restreint de Claude Code, ni tes réglages ni tes autres agents
+  ne s'invitent.
+- **Le serveur veille, pas seulement les consignes** : un hook de Claude Code demande au bureau avant chaque appel d'agent, commande ou
+  écriture. Le bureau impose le modèle de chaque pôle, fait attendre un agent en trop, et refuse les gestes git interdits (push vers
+  une branche interdite, `--force`, `reset --hard`, réécriture d'historique, signature d'IA dans un commit).
+- **Le jeton Telegram reste sur ton PC** (`~/.config/bureau-des-agents/telegram.json`, lisible par toi seul) : jamais montré à l'écran
+  après l'enregistrement, jamais transmis à Claude.
 - **Les actions risquées te sont soumises** : pour une commande sensible, l'agent lève la main et tu réponds Oui ou Non.
 - **Les sites créés s'affichent dans un bac à sable** : ils ne peuvent ni lire le bureau, ni parler à Claude Code.
 - **Le bureau reste léger** : environ une milliseconde de dessin par image, rien quand l'onglet est caché.
 - **Ça consomme ton abonnement Claude**, comme si tu demandais le travail à Claude Code toi-même. Une mission de 7 agents a pris
   2 à 3 % de la fenêtre de 5 heures d'un abonnement, lors de nos essais.
 
-Testé sur macOS. Sur Windows et Linux, ça devrait marcher : dis-nous si ce n'est pas le cas (onglet Issues).
+Testé sur macOS et sous WSL (Ubuntu dans Windows : les dossiers s'ouvrent dans l'Explorateur). Sur Linux, ça devrait marcher : dis-nous
+si ce n'est pas le cas (onglet Issues).
 
 ## L'améliorer avec nous
 

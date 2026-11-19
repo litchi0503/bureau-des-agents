@@ -1,0 +1,8 @@
+#!/bin/sh
+# Retire toute signature d'IA du message de commit (Co-Authored-By, Claude-Session, « Generated with »…).
+f="$1"
+tmp="$f.tmp.$$"
+grep -viE '^(co-authored-by:|claude-session:)|generated with|🤖 generated|noreply@anthropic\.com' "$f" > "$tmp" || true
+# pas de lignes vides en trop à la fin
+awk 'NF{n=NR} {l[NR]=$0} END{for(i=1;i<=n;i++) print l[i]}' "$tmp" > "$f"
+rm -f "$tmp"

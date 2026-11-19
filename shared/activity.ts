@@ -1,6 +1,6 @@
 // Les métiers du bureau, et la traduction en français de ce que fait vraiment chaque agent :
 // chaque outil de Claude Code devient une action (une icône, une animation, une bulle).
-import type { ActKind, MissionStats, OfficeEvent, Role } from './protocol.ts';
+import type { ActKind, MissionStats, OfficeEvent, Pole, Role } from './protocol.ts';
 
 export interface RoleInfo {
   /** le nom du métier, tel qu'il s'affiche dans le bureau */
@@ -13,23 +13,33 @@ export interface RoleInfo {
 }
 
 export const ROLES: Record<Role, RoleInfo> = {
-  chef: { label: 'Chef de projet', icon: '⭐', color: '#FF8A3D', type: '', what: 'Il reçoit ta demande, fait le plan, répartit le travail et assemble le rendu.' },
-  recherche: { label: 'Recherche', icon: '🔎', color: '#4FB3FF', type: 'chercheur', what: 'Cherche sur internet : concurrents, prix, avis, actualités, sources.' },
-  code: { label: 'Code', icon: '💻', color: '#3DDC97', type: 'developpeur', what: 'Code, sites, scripts, automatisations : ce qui se lance et se teste.' },
-  design: { label: 'Design', icon: '🎨', color: '#FF6FA8', type: 'designer', what: 'Pages web soignées, maquettes, visuels, mise en forme.' },
-  redaction: { label: 'Rédaction', icon: '✍️', color: '#A98BFF', type: 'redacteur', what: 'Posts, e-mails, articles, scripts vidéo, rapports.' },
-  analyse: { label: 'Analyse', icon: '📊', color: '#FFC93D', type: 'analyste', what: 'Chiffres, tableaux, fichiers, comparatifs, calculs.' },
+  chef: { label: 'Max', icon: '⭐', color: '#FF8A3D', type: '', what: 'Le chef : il découpe la demande, fixe l’ordre et les choix techniques, répartit le travail et assemble le rendu.' },
+  recherche: { label: 'Recherche', icon: '🔎', color: '#4FB3FF', type: 'chercheur', what: 'Le client, les concurrents, les docs : cherche, lit, recoupe et prend des notes.' },
+  design: { label: 'Design', icon: '🎨', color: '#FF6FA8', type: 'designer', what: 'Maquettes et charte : pages soignées, visuels, mise en forme.' },
+  code: { label: 'Code', icon: '💻', color: '#3DDC97', type: 'developpeur', what: 'Le développement : code, sites, scripts, tests.' },
+  relecture: { label: 'Relecture', icon: '🔍', color: '#FFC93D', type: 'relecteur', what: 'Lint, tests, comparaison avec la maquette : relève les écarts, sans toucher au code.' },
+  redaction: { label: 'Rédaction', icon: '✍️', color: '#A98BFF', type: 'redacteur', what: 'Cahier des charges, docs et textes.' },
   renfort: { label: 'Renfort', icon: '🤖', color: '#9AA3B5', type: '', what: 'Un coup de main sur une tâche à part.' },
 };
 
-/** Les outils Claude Code de chaque métier (le chef a tous ceux de la séance). */
+/** Les pôles, dans l'ordre des réglages. */
+export const POLES: Pole[] = ['chef', 'recherche', 'design', 'code', 'relecture', 'redaction'];
+
+/** Le rôle d'un ancien enregistrement : « analyse » (l'ancien métier) est rangé dans Recherche. */
+export function normRole(r: unknown): Role {
+  if (r === 'analyse') return 'recherche';
+  return typeof r === 'string' && r in ROLES ? (r as Role) : 'renfort';
+}
+
+/** Les outils Claude Code de chaque pôle (le chef a tous ceux de la séance). */
 export const ROLE_TOOLS: Record<Role, string[]> = {
   chef: ['Agent', 'TodoWrite', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Bash'],
-  recherche: ['WebSearch', 'WebFetch', 'Read', 'Glob', 'Grep'],
-  code: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'WebFetch'],
-  design: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch'],
-  redaction: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
-  analyse: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
+  recherche: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob', 'Write'],
+  design: ['Read', 'Write', 'Edit', 'Glob'],
+  code: ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'],
+  // Write seulement pour son fichier de revue, Bash seulement pour vérifier (le serveur y veille : server/hook.ts)
+  relecture: ['Read', 'Grep', 'Glob', 'Bash', 'Write'],
+  redaction: ['Read', 'Write', 'Edit', 'Glob'],
   renfort: [],
 };
 
@@ -42,6 +52,7 @@ export const TOOL_INFO: Record<string, string> = {
 
 /** Le métier d'un agent, d'après le type d'agent que le chef a appelé. */
 export function roleOfType(type: string): Role {
+  if (type === 'analyste') return 'recherche';
   for (const [role, info] of Object.entries(ROLES) as [Role, RoleInfo][]) if (info.type && info.type === type) return role;
   return 'renfort';
 }
@@ -52,8 +63,8 @@ export const NAMES: Record<Role, string[]> = {
   recherche: ['Iris', 'Hugo', 'Léa', 'Malo', 'Zoé', 'Noé', 'Inès', 'Tom', 'Jade', 'Sacha', 'Lou', 'Nils'],
   code: ['Ada', 'Linus', 'Grace', 'Alan', 'Margaret', 'Dennis'],
   design: ['Frida', 'Coco', 'Henri', 'Sonia', 'Saul'],
+  relecture: ['Marie', 'Blaise', 'Émilie', 'Gaspard', 'Edsger'],
   redaction: ['Colette', 'Victor', 'Simone', 'Jules', 'George'],
-  analyse: ['Marie', 'Blaise', 'Émilie', 'Gaspard', 'Ada'],
   renfort: ['Bob', 'Lulu', 'Gaston', 'Nina', 'Momo', 'Kiki'],
 };
 

@@ -138,7 +138,7 @@ function drawAccessory(g: CanvasRenderingContext2D, L: Look, dir: Dir, bob: numb
       }
       break;
     }
-    case 'analyse': { // des lunettes, sur la visière
+    case 'relecture': { // des lunettes, sur la visière
       if (dir === 'down') {
         const f = '#f3f1f8';
         for (const x of [6, 10]) {

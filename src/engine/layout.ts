@@ -1,7 +1,7 @@
 // Le plan du bureau : une grille de 22 × 16 cases de 16 pixels, vue de dessus (en 3/4, comme dans
-// les jeux en pixel art). Chaque métier a son coin, ses bureaux et ses chaises ; Max est au centre,
+// les jeux en pixel art). Chaque pôle a son îlot, avec autant de chaises que de places ; Max est au centre,
 // devant le tableau du plan ; la porte est en bas, c'est par là qu'arrive l'équipe.
-import type { Role } from '../../shared/protocol.ts';
+import type { Pole, Role } from '../../shared/protocol.ts';
 
 export const T = 16;
 export const COLS = 22;
@@ -39,63 +39,91 @@ export interface Seat {
 
 export interface Zone { role: Role; label: string; x: number; y: number; w: number; h: number }
 
-/** Les coins du bureau (le tapis au sol et l'étiquette). */
+/** Les îlots du bureau (le tapis au sol et l'étiquette), un par pôle. */
 export const ZONES: Zone[] = [
-  { role: 'recherche', label: 'Recherche', x: 1, y: 3, w: 6, h: 6 },
-  { role: 'code', label: 'Atelier code', x: 15, y: 3, w: 6, h: 3 },
-  { role: 'design', label: 'Studio design', x: 15, y: 6, w: 6, h: 3 },
-  { role: 'redaction', label: 'Rédaction', x: 1, y: 10, w: 6, h: 3 },
-  { role: 'analyse', label: 'Analyse', x: 15, y: 10, w: 4, h: 3 },
+  { role: 'redaction', label: 'Rédaction', x: 1, y: 3, w: 6, h: 3 },
+  { role: 'recherche', label: 'Recherche', x: 1, y: 10, w: 6, h: 3 },
+  { role: 'code', label: 'Code', x: 15, y: 3, w: 6, h: 3 },
+  { role: 'design', label: 'Design', x: 15, y: 6, w: 6, h: 3 },
+  { role: 'relecture', label: 'Relecture', x: 15, y: 10, w: 6, h: 3 },
   { role: 'chef', label: 'Max, chef de projet', x: 9, y: 6, w: 4, h: 3 },
 ];
 
-const furn: Furn[] = [];
-const seats: Seat[] = [];
+/** Les bureaux possibles de chaque îlot (3 au plus) : on en pose autant que de places. */
+const DESKS: Record<Exclude<Pole, 'chef'>, [number, number][]> = {
+  // près de la bibliothèque (les archives, en bas à gauche)
+  recherche: [[1, 12], [3, 12], [5, 12]],
+  // un bureau libre, en haut à gauche
+  redaction: [[1, 5], [3, 5], [5, 5]],
+  // près du serveur
+  code: [[15, 5], [17, 5], [19, 5]],
+  // près du chevalet et de son écran de maquettes
+  design: [[15, 8], [17, 8], [19, 8]],
+  // près de l'imprimante
+  relecture: [[15, 12], [17, 12], [19, 12]],
+};
 
-function desk(role: Role, tx: number, ty: number) {
-  const id = `desk-${role}-${tx}-${ty}`;
-  furn.push({ id, kind: 'desk', tx, ty, w: 2, h: 1, role, seed: tx * 31 + ty });
-  furn.push({ id: `chair-${id}`, kind: 'chair', tx, ty: ty - 1, w: 0, h: 0, role });
-  seats.push({ id: `seat-${id}`, role, tile: [tx, ty - 1], x: (tx + 1) * T, y: ty * T - 1, deskId: id });
+/** Les meubles et les places : refaits quand le nombre de places change (voir setPlaces). */
+export const FURNITURE: Furn[] = [];
+export const SEATS: Seat[] = [];
+/** change à chaque nouveau plan (le dessin, les clics et les chemins se recalculent) */
+export let layoutVersion = 0;
+
+function build(places: Partial<Record<Pole, number>>) {
+  const furn: Furn[] = [];
+  const seats: Seat[] = [];
+  const desk = (role: Role, tx: number, ty: number) => {
+    const id = `desk-${role}-${tx}-${ty}`;
+    furn.push({ id, kind: 'desk', tx, ty, w: 2, h: 1, role, seed: tx * 31 + ty });
+    furn.push({ id: `chair-${id}`, kind: 'chair', tx, ty: ty - 1, w: 0, h: 0, role });
+    seats.push({ id: `seat-${id}`, role, tile: [tx, ty - 1], x: (tx + 1) * T, y: ty * T - 1, deskId: id });
+  };
+  for (const [role, list] of Object.entries(DESKS) as [Exclude<Pole, 'chef'>, [number, number][]][]) {
+    const n = Math.max(1, Math.min(3, places[role] ?? 1));
+    for (const [tx, ty] of list.slice(0, n)) desk(role, tx, ty);
+  }
+  // Le bureau du chef, face à toi, devant le tableau
+  furn.push({ id: 'chefDesk', kind: 'chefDesk', tx: 9, ty: 7, w: 4, h: 1, role: 'chef' });
+  furn.push({ id: 'chefChair', kind: 'chefChair', tx: 10, ty: 6, w: 0, h: 0, role: 'chef' });
+  // Le matériel et la déco
+  furn.push({ id: 'rack', kind: 'rack', tx: 14, ty: 3, w: 1, h: 1 });
+  furn.push({ id: 'printer', kind: 'printer', tx: PRINTER[0], ty: PRINTER[1], w: 1, h: 1 });
+  furn.push({ id: 'cooler', kind: 'cooler', tx: 9, ty: 4, w: 1, h: 1 });
+  furn.push({ id: 'easel', kind: 'easel', tx: 20, ty: 6, w: 1, h: 1 });
+  furn.push({ id: 'plant-left', kind: 'plantBig', tx: 1, ty: 7, w: 1, h: 1, seed: 3 });
+  furn.push({ id: 'plant-entry-l', kind: 'plantTall', tx: 8, ty: 14, w: 1, h: 1, seed: 5 });
+  furn.push({ id: 'plant-entry-r', kind: 'plantBig', tx: 13, ty: 14, w: 1, h: 1, seed: 9 });
+  furn.push({ id: 'plant-relecture', kind: 'plantTall', tx: 14, ty: 12, w: 1, h: 1, seed: 11 });
+  furn.push({ id: 'sofa', kind: 'sofa', tx: 2, ty: 14, w: 3, h: 1 });
+  furn.push({ id: 'tableLow', kind: 'tableLow', tx: 2, ty: 13, w: 2, h: 0 });
+  furn.push({ id: 'lamp', kind: 'lamp', tx: 1, ty: 14, w: 1, h: 1 });
+  furn.push({ id: 'shelf', kind: 'shelf', tx: 5, ty: 14, w: 2, h: 1 });
+  furn.push({ id: 'coffee', kind: 'coffee', tx: 16, ty: 14, w: 3, h: 1 });
+  furn.push({ id: 'jukebox', kind: 'jukebox', tx: 14, ty: 14, w: 2, h: 1 });
+  furn.push({ id: 'plant-coffee', kind: 'plantBig', tx: 19, ty: 14, w: 1, h: 1, seed: 21 });
+  furn.push({ id: 'lamp-r', kind: 'lamp', tx: 20, ty: 14, w: 1, h: 1 });
+  furn.push({ id: 'bin', kind: 'bin', tx: 7, ty: 12, w: 0, h: 0 });
+  FURNITURE.splice(0, FURNITURE.length, ...furn);
+  SEATS.splice(0, SEATS.length, ...seats);
+  layoutVersion++;
 }
 
-// Recherche : deux rangées de trois bureaux (c'est le coin le plus demandé, un chercheur par sujet)
-for (const ty of [5, 8]) for (const tx of [1, 3, 5]) desk('recherche', tx, ty);
-// Atelier code
-for (const tx of [15, 17, 19]) desk('code', tx, 5);
-// Studio design
-for (const tx of [15, 17]) desk('design', tx, 8);
-// Rédaction
-for (const tx of [1, 3, 5]) desk('redaction', tx, 12);
-// Analyse
-for (const tx of [15, 17]) desk('analyse', tx, 12);
+/** L'imprimante, dans l'îlot Relecture. */
+export const PRINTER: [number, number] = [20, 10];
 
-// Le bureau du chef, face à toi
-furn.push({ id: 'chefDesk', kind: 'chefDesk', tx: 9, ty: 7, w: 4, h: 1, role: 'chef' });
-furn.push({ id: 'chefChair', kind: 'chefChair', tx: 10, ty: 6, w: 0, h: 0, role: 'chef' });
+let placesKey = '';
+/** Autant de chaises que de places, pôle par pôle. Renvoie vrai si le plan a changé. */
+export function setPlaces(places: Partial<Record<Pole, number>>): boolean {
+  const key = JSON.stringify(Object.entries(places).sort());
+  if (key === placesKey) return false;
+  placesKey = key;
+  build(places);
+  return true;
+}
+
+build({ recherche: 2 });
+
 export const CHEF_SEAT: Seat = { id: 'seat-chef', role: 'chef', tile: [10, 6], x: 11 * T, y: 7 * T - 1, deskId: 'chefDesk' };
-
-// Le matériel et la déco
-furn.push({ id: 'rack', kind: 'rack', tx: 14, ty: 3, w: 1, h: 1 });
-furn.push({ id: 'printer', kind: 'printer', tx: 12, ty: 4, w: 1, h: 1 });
-furn.push({ id: 'cooler', kind: 'cooler', tx: 9, ty: 4, w: 1, h: 1 });
-furn.push({ id: 'easel', kind: 'easel', tx: 19, ty: 8, w: 1, h: 1 });
-furn.push({ id: 'plant-design', kind: 'plantBig', tx: 20, ty: 8, w: 1, h: 1, seed: 3 });
-furn.push({ id: 'plant-entry-l', kind: 'plantTall', tx: 8, ty: 14, w: 1, h: 1, seed: 5 });
-furn.push({ id: 'plant-entry-r', kind: 'plantBig', tx: 13, ty: 14, w: 1, h: 1, seed: 9 });
-furn.push({ id: 'plant-analyse', kind: 'plantTall', tx: 20, ty: 11, w: 1, h: 1, seed: 11 });
-furn.push({ id: 'sofa', kind: 'sofa', tx: 2, ty: 14, w: 3, h: 1 });
-furn.push({ id: 'tableLow', kind: 'tableLow', tx: 2, ty: 13, w: 2, h: 0 });
-furn.push({ id: 'lamp', kind: 'lamp', tx: 1, ty: 14, w: 1, h: 1 });
-furn.push({ id: 'shelf', kind: 'shelf', tx: 5, ty: 14, w: 2, h: 1 });
-furn.push({ id: 'coffee', kind: 'coffee', tx: 16, ty: 14, w: 3, h: 1 });
-furn.push({ id: 'jukebox', kind: 'jukebox', tx: 14, ty: 14, w: 2, h: 1 });
-furn.push({ id: 'plant-coffee', kind: 'plantBig', tx: 19, ty: 14, w: 1, h: 1, seed: 21 });
-furn.push({ id: 'lamp-r', kind: 'lamp', tx: 20, ty: 14, w: 1, h: 1 });
-furn.push({ id: 'bin', kind: 'bin', tx: 7, ty: 12, w: 0, h: 0 });
-
-export const FURNITURE = furn;
-export const SEATS = seats;
 
 /** Les points de passage importants. Les pieds d'un robot debout sur une case : (x*16+8, y*16+13). */
 export const SPOTS = {
