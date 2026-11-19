@@ -59,10 +59,11 @@ await bureau.init();
 
 // Telegram : les alertes cochées dans l'onglet Suivi, et tes réponses à Max
 const telegram = new Telegram({
-  onMessage: (text) => {
-    if (!bureau.current) return 'Aucune demande en cours : écris /demande &lt;projet&gt; &lt;texte&gt;.';
-    bureau.say(text);
-    return 'Transmis à Max ✅';
+  onMessage: (text, r) => {
+    // « oui », « oui demande », « non » : la réponse à une permission en attente (sinon, un message pour Max)
+    if (r.kind === 'perm' && bureau.hasPermissionAsk()) return bureau.answerLatestPermission(r.choice);
+    // 1A 2B, OK, KO : la réponse va à la mission qui a posé la question, même terminée
+    return bureau.replyFromTelegram(text, r.kind === 'ok' || r.kind === 'ko' || r.kind === 'answers');
   },
   onDemande: (project, text) => bureau.remoteDemande(project, text),
   onStatus: () => bureau.statusText(),
@@ -176,7 +177,10 @@ const str = (v: unknown, max = 20000) => (typeof v === 'string' ? v.slice(0, max
 async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
   switch (m.t) {
     case 'start':
-      await bureau.start(str(m.prompt), { bypass: m.bypass === true, projectId: m.projectId ? str(m.projectId, 80) : undefined });
+      await bureau.start(str(m.prompt), { bypass: m.bypass === true, projectId: m.projectId ? str(m.projectId, 80) : undefined, contextFrom: m.contextFrom ? str(m.contextFrom, 40) : undefined });
+      break;
+    case 'resume':
+      await bureau.resume(str(m.missionId, 40));
       break;
     case 'say':
       bureau.say(str(m.text));
@@ -185,7 +189,7 @@ async function handle(m: ClientMsg, send: (m: ServerMsg) => void) {
       bureau.stop();
       break;
     case 'answer':
-      bureau.answer(str(m.requestId, 100), m.allow === true);
+      bureau.answer(str(m.requestId, 100), m.allow === true, m.scope === 'request' ? 'request' : 'once');
       break;
     case 'new':
       bureau.close();

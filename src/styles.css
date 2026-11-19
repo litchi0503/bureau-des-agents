@@ -831,3 +831,12 @@ input.mini { height: 28px !important; width: 120px; border-radius: 999px !import
 .tg-err { color: #ffb0b0; font-size: 13px; }
 @media (max-width: 640px) { .tg-wiz { grid-template-columns: 1fr; } .tg-steps { border-right: 0; border-bottom: 1px solid var(--line); } .tg-help div { grid-template-columns: 1fr; } }
 @media (max-width: 1440px) { .icon-btn.txt { width: auto; padding: 0 8px; } .icon-btn.txt span { display: none; } }
+
+/* corrections 1 : Reprendre, Interrompu, Enchaîner les demandes */
+.hist-row2 em.st-interrupted { color: #a7abb5; }
+.modal.small-modal { width: min(460px, calc(100vw - 32px)); }
+.modal.small-modal .row { justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.toggle-line { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; line-height: 1.4; cursor: pointer; }
+.toggle-line input { margin-top: 3px; }
+button.link { background: none; border: 0; color: inherit; cursor: pointer; padding: 0 0 0 6px; font: inherit; }
+.ct-row > span.row { gap: 4px; flex-wrap: wrap; }

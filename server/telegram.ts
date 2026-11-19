@@ -24,6 +24,8 @@ export type Reply =
   | { kind: 'ko'; n: number | null; text: string }
   | { kind: 'answers'; list: { n: number; choice: string }[] }
   | { kind: 'command'; name: 'demande' | 'status' | 'stop' | 'aide' | 'start'; arg: string }
+  /** la réponse à une permission demandée par le bureau : oui (une fois), oui pour cette demande, non */
+  | { kind: 'perm'; choice: 'once' | 'request' | 'no' }
   | { kind: 'text'; text: string };
 
 /** Ce que tu as écrit au bot : une réponse à Max, une commande, ou un message libre. */
@@ -32,6 +34,9 @@ export function parseReply(raw: string): Reply {
   const cmd = /^\/(demande|status|stop|aide|help|start)(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(t);
   if (cmd) { const n = cmd[1].toLowerCase(); return { kind: 'command', name: (n === 'help' ? 'aide' : n) as 'demande', arg: (cmd[2] ?? '').trim() }; }
   if (/^ok[.!]?$/i.test(t)) return { kind: 'ok' };
+  if (/^oui[.!]?$/i.test(t)) return { kind: 'perm', choice: 'once' };
+  if (/^oui\s+(pour\s+)?(cette\s+|la\s+)?(demande|toute la demande)[.!]?$/i.test(t)) return { kind: 'perm', choice: 'request' };
+  if (/^non[.!]?$/i.test(t)) return { kind: 'perm', choice: 'no' };
   const ko = /^ko\b\s*(\d+)?\s*[:.,-]?\s*([\s\S]*)$/i.exec(t);
   if (ko) return { kind: 'ko', n: ko[1] ? Number(ko[1]) : null, text: ko[2].trim() };
   if (/^(\s*\d+\s*\)?\s*[A-Za-z]\b[\s,;]*)+$/.test(t)) {
@@ -48,13 +53,14 @@ export function replyForMax(r: Reply): string | null {
     case 'ko': return `KO${r.n ? ` sur la question ${r.n}` : ''} : ${r.text || 'je ne suis pas d’accord'}. (réponse envoyée par Telegram)`;
     case 'answers': return `Mes réponses : ${r.list.map((a) => `${a.n}) ${a.choice}`).join(', ')}. (réponse envoyée par Telegram)`;
     case 'text': return `${r.text} (message envoyé par Telegram)`;
+    case 'perm': return `${r.choice === 'no' ? 'Non' : 'Oui'} (message envoyé par Telegram)`;
     default: return null;
   }
 }
 
 export interface TelegramHooks {
-  /** une réponse ou un message pour Max */
-  onMessage: (text: string) => Promise<string | void> | string | void;
+  /** une réponse ou un message pour Max (et ce que tu as écrit, déjà lu) */
+  onMessage: (text: string, reply: Reply) => Promise<string | void> | string | void;
   /** /demande <projet> <texte> */
   onDemande: (project: string, text: string) => Promise<string>;
   onStatus: () => string;
@@ -209,7 +215,7 @@ export class Telegram {
       }
     } else {
       const text = replyForMax(r);
-      if (text) answer = await Promise.resolve(this.hooks.onMessage(text)).catch((e) => html(e instanceof Error ? e.message : String(e)));
+      if (text) answer = await Promise.resolve(this.hooks.onMessage(text, r)).catch((e) => html(e instanceof Error ? e.message : String(e)));
     }
     if (answer) await this.send(answer);
   }
@@ -219,4 +225,5 @@ const AIDE = `<b>Ce que je sais faire</b>
 /demande &lt;projet&gt; &lt;texte&gt; : une nouvelle demande (ajoutée au carnet, lancée si le projet est libre)
 /status : où en est l'équipe
 /stop : tout arrêter
-Pour répondre à mes questions : <code>1A 2B</code>, <code>OK</code> (je suis mes conseils) ou <code>KO 3 : …</code>`;
+Pour répondre à mes questions : <code>1A 2B</code>, <code>OK</code> (je suis mes conseils) ou <code>KO 3 : …</code>
+Pour une permission : <code>oui</code> (une fois), <code>oui demande</code> (pour toute la demande) ou <code>non</code>`;

@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { ProjectInfo } from '../../shared/protocol.ts';
 import { sfx } from '../audio/sfx.ts';
+import { resumeMission } from '../net/link.ts';
 import { savePref, useOffice } from '../state/store.ts';
 import { fmtDate, tilde } from './format.ts';
 import { mdToHtml } from './md.ts';
@@ -156,6 +157,11 @@ function ProjectSheet({ p }: { p: ProjectInfo }) {
           {d.readFirst.map((f) => <button key={f} className="chip" onClick={() => setD({ ...d, readFirst: d.readFirst.filter((x) => x !== f) })}>{f} ✕</button>)}
           <input className="mini" value={newRead} placeholder="+ ajouter" onChange={(e) => setNewRead(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newRead.trim()) { setD({ ...d, readFirst: [...d.readFirst, newRead.trim()] }); setNewRead(''); } }} />
         </div>
+        <h4 className="set-sec">Enchaîner les demandes</h4>
+        <label className="toggle-line">
+          <input type="checkbox" checked={p.chain !== false} onChange={(e) => { sfx('click'); send({ t: 'project_update', id: p.id, patch: { chain: e.target.checked } }); }} />
+          <span>{p.chain !== false ? 'Activé : quand une demande se termine (et si le garde-fou le permet), Max lance la suivante du carnet qui est prête.' : 'Désactivé : Max attend que tu cliques « Lancer » dans le carnet.'}</span>
+        </label>
         <h4 className="set-sec">Fichier carnet</h4>
         <div className="kv2"><span>Carnet</span><input value={d.backlogFile} placeholder="(celui du bureau)" onChange={(e) => setD({ ...d, backlogFile: e.target.value })} aria-label="Fichier carnet dans le dépôt" /></div>
         <p className="small muted">Vide : le carnet du bureau (Projets/{p.name}/carnet.md). Un fichier du dépôt (docs/agent/BACKLOG.md…) : Max le lit et l’écrit dans son format.</p>
@@ -234,7 +240,13 @@ export function CarnetRoom({ projectId }: { projectId: string }) {
                   <div key={r.id + r.title} className="ct-row" role="row">
                     <code>{r.id}</code><b>{r.title}</b><span>{r.step}</span>
                     <span className="dot-state" style={{ ['--c' as string]: STATE_COLOR(r.state) }}>{r.state}</span>
-                    <span>{r.state === 'À faire' && !project?.busy ? <button className="btn small" onClick={() => { send({ t: 'carnet_launch', projectId, id: r.id }); useOffice.setState({ modal: null }); }}>Lancer</button> : r.wait || '—'}</span>
+                    <span className="row">{r.state === 'À faire' && !project?.busy ? <button className="btn small" onClick={() => { send({ t: 'carnet_launch', projectId, id: r.id }); useOffice.setState({ modal: null }); }}>Lancer</button>
+                      : carnet.missions[r.id] && !carnet.missions[r.id].working ? (
+                        <>
+                          <button className="btn small" title="Revoir la demande (sans relancer l’équipe)" onClick={() => { sfx('click'); send({ t: 'replay', missionId: carnet.missions[r.id].missionId }); useOffice.setState({ modal: null }); }}>Rejouer</button>
+                          <button className="btn small primary" disabled={busy} title="Rouvre la séance de Max : écris-lui comme avant" onClick={() => { sfx('click'); resumeMission(carnet.missions[r.id].missionId); useOffice.setState({ modal: null }); }}>Reprendre</button>
+                        </>
+                      ) : r.wait || '—'}</span>
                   </div>
                 ))}
                 {!carnet.rows.length && <p className="small muted pad">Pas encore de demande.</p>}

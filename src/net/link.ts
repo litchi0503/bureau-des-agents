@@ -88,6 +88,14 @@ export function playReplay(mission: MissionInfo, log: Logged[], speed = 1, opts:
   return player;
 }
 
+/** « Reprendre » : la séance de Max se rouvre (le serveur renvoie l'état du bureau), on quitte la rediffusion. */
+export function resumeMission(missionId: string) {
+  player?.stop();
+  player = null;
+  if (useOffice.getState().replaying) { useOffice.setState({ replaying: false }); placesFrom(useOffice.getState().settings); }
+  useOffice.getState().send({ t: 'resume', missionId });
+}
+
 /** Reprend la rediffusion depuis le début, à une autre vitesse. */
 export function replaySpeed(speed: number) {
   if (!lastReplay) return;

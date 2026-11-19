@@ -11,7 +11,7 @@ import { effortLabel, modelLabel } from '../shared/settings.ts';
 import type { HistEntry, HistLine, Logged, MissionInfo, OfficeEvent } from '../shared/protocol.ts';
 
 const STATE_TEXT: Record<string, string> = {
-  working: 'Travaille', waiting: 'Attend ta réponse', queued: 'Attend une place', pause: 'Pause café', blocked: 'Bloqué', crashed: 'Planté', done: 'Terminé',
+  working: 'Travaille', waiting: 'Attend ta réponse', queued: 'Attend une place', pause: 'Pause café', blocked: 'Bloqué', crashed: 'Planté', done: 'Terminé', interrupted: 'Interrompu',
 };
 
 /** Ce qu'un événement ajoute à l'historique de chaque agent concerné (fonction pure). */
@@ -107,6 +107,25 @@ export class History {
     if (lines.length) await mkdir(dir, { recursive: true });
     for (const { who, line } of lines) await appendFile(path.join(dir, `${safe(who)}.jsonl`), JSON.stringify(line) + '\n').catch(() => {});
     for (const id of touched) await appendFile(this.indexFile, JSON.stringify(this.entries.get(`${m.id}|${id}`)) + '\n').catch(() => {});
+  }
+
+  /**
+   * Au démarrage du bureau : tout passage encore « en cours » vient d'une demande coupée (bureau arrêté).
+   * Il passe à « interrompu », et son journal reçoit une ligne de plus (les anciennes lignes ne sont pas réécrites).
+   */
+  async interruptStale(at = Date.now()): Promise<{ missionId: string; id: string }[]> {
+    const out: { missionId: string; id: string }[] = [];
+    for (const e of this.entries.values()) {
+      if (e.status !== 'working') continue;
+      e.status = 'interrupted';
+      e.endAt = at;
+      out.push({ missionId: e.missionId, id: e.id });
+      const dir = path.join(this.root, safe(e.missionId));
+      await mkdir(dir, { recursive: true });
+      await appendFile(path.join(dir, `${safe(e.id)}.jsonl`), JSON.stringify({ at, type: 'état', detail: 'interrompu (bureau redémarré)' } satisfies HistLine) + '\n').catch(() => {});
+    }
+    if (out.length) await this.compact();
+    return out;
   }
 
   /** Le journal d'un agent (le plus récent d'abord). */
