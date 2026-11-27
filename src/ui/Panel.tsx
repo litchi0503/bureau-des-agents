@@ -6,6 +6,7 @@ import { ROLES } from '../../shared/activity.ts';
 import type { Role } from '../../shared/protocol.ts';
 import { sfx } from '../audio/sfx.ts';
 import { robotSprite } from '../engine/robots.ts';
+import { resumeMission } from '../net/link.ts';
 import { teamList, useOffice, type AgentView } from '../state/store.ts';
 import { EXAMPLES } from './Dialog.tsx';
 import { fmtDate, fmtDuration, tilde } from './format.ts';
@@ -85,6 +86,7 @@ function Welcome() {
               <div><b>{m.title}</b><span className="small muted">{fmtDate(m.createdAt)} · {fmtDuration(m.workMs)} · {m.files.length} rendu{m.files.length > 1 ? 's' : ''}</span></div>
               <div className="row">
                 <button className="btn small" onClick={() => { sfx('click'); send({ t: 'replay', missionId: m.id }); }}>Rejouer</button>
+                {m.status !== 'working' && <button className="btn small primary" title="Rouvre la séance de Max : écris-lui comme avant" onClick={() => { sfx('click'); resumeMission(m.id); }}>Reprendre</button>}
                 <button className="btn small ghost" onClick={() => send({ t: 'open', missionId: m.id })}>Dossier</button>
               </div>
             </div>

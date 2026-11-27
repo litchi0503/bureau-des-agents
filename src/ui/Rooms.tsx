@@ -435,7 +435,7 @@ function TeamHistory() {
               <Avatar role={e.role} size={22} />
               <b>{e.name}</b>
               <span>{ROLES[e.role]?.label} · {e.task}<small>{e.missionTitle} · {fmtDate(e.at)}{e.model ? ` · ${modelLabel(e.model)}` : ''}{e.switched ? ` (bascule ${e.switched})` : ''}</small></span>
-              <em className={`st-${e.status}`}>{e.status === 'done' ? '✓ Terminé' : e.status === 'crashed' ? '✕ Planté' : '… en cours'}{e.ms ? ` · ${fmtDuration(e.ms)}` : ''}</em>
+              <em className={`st-${e.status}`}>{e.status === 'done' ? '✓ Terminé' : e.status === 'crashed' ? '✕ Planté' : e.status === 'interrupted' ? '⏸ Interrompu' : '… en cours'}{e.ms ? ` · ${fmtDuration(e.ms)}` : ''}</em>
             </button>
           ))}
           <div className="row pager">

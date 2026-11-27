@@ -6,7 +6,7 @@ import { sfx } from './audio/sfx.ts';
 import { applySound } from './audio/sound.ts';
 import { savePref, useOffice, type Tod } from './state/store.ts';
 import { AskBar, Dialog } from './ui/Dialog.tsx';
-import { FinalCard, History, Toasts, Viewer } from './ui/Modals.tsx';
+import { FinalCard, History, ResumeFailed, Toasts, Viewer } from './ui/Modals.tsx';
 import { SettingsPanel } from './ui/Settings.tsx';
 import { Office } from './ui/Office.tsx';
 import { Panel } from './ui/Panel.tsx';
@@ -108,6 +108,7 @@ export function App() {
       <Rooms />
       <History />
       <SettingsPanel />
+      <ResumeFailed />
       <Toasts />
     </div>
   );

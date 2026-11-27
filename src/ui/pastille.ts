@@ -13,6 +13,7 @@ export const PASTILLE: Record<AgentState, { label: string; color: string }> = {
   blocked: { label: 'Bloqué', color: '#FF9F43' },
   crashed: { label: 'Planté', color: '#E0412F' },
   done: { label: 'Terminé', color: '#8A90A0' },
+  interrupted: { label: '⏸ Interrompu', color: '#A7ABB5' },
 };
 
 const short = (t: string, n = 20) => {
@@ -33,6 +34,7 @@ export function pastilleOf(who: string, s: S, now: number): { state: AgentState;
   const a = who === 'chef' ? null : s.agents[who];
   if (a?.status === 'done' || a?.status === 'reporting') return pick('done');
   if (a?.status === 'failed' || t?.state === 'crashed') return pick('crashed');
+  if (t?.state === 'interrupted') return pick('interrupted');
   if (t?.state === 'blocked') return pick('blocked', `Bloqué · ${Math.max(1, Math.round((now - (t.lastAt || t.stateAt)) / 60_000))} min`);
   if (t?.state === 'queued') return pick('queued');
   if (t?.state === 'pause') return pick('pause');

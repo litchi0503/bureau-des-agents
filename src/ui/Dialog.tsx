@@ -123,16 +123,24 @@ export function AskBar() {
   if (!a) return null;
   const who = a.who === 'chef' ? 'Max' : agents[a.who]?.name ?? 'Un agent';
   const role = a.who === 'chef' ? 'chef' : agents[a.who]?.role ?? 'renfort';
-  const answer = (allow: boolean) => { sfx(allow ? 'yes' : 'no'); send({ t: 'answer', requestId: a.requestId, allow }); };
+  const answer = (allow: boolean, scope?: 'request') => { sfx(allow ? 'yes' : 'no'); send({ t: 'answer', requestId: a.requestId, allow, ...(scope ? { scope } : {}) }); };
   return (
     <div className="askbar">
       <div className="askbar-head">🙋 <b style={{ color: ROLES[role].color }}>{who}</b> te demande la permission{asks.length > 1 ? ` (et ${asks.length - 1} autre${asks.length > 2 ? 's' : ''})` : ''}</div>
       <div className="askbar-label">{a.label}</div>
-      {!a.full && a.detail && <pre className="askbar-detail">{a.detail}</pre>}
-      <div className="askbar-actions">
-        <button className="btn primary" onClick={() => answer(true)}>Autoriser</button>
-        <button className="btn" onClick={() => answer(false)}>Refuser</button>
-      </div>
+      {!a.full && a.detail && <pre className="askbar-detail">{tidy(a.detail)}</pre>}
+      {a.scoped ? (
+        <div className="askbar-actions">
+          <button className="btn primary" onClick={() => answer(true)}>Oui, une fois</button>
+          <button className="btn" onClick={() => answer(true, 'request')}>Oui pour cette demande</button>
+          <button className="btn" onClick={() => answer(false)}>Non</button>
+        </div>
+      ) : (
+        <div className="askbar-actions">
+          <button className="btn primary" onClick={() => answer(true)}>Autoriser</button>
+          <button className="btn" onClick={() => answer(false)}>Refuser</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -149,6 +157,7 @@ function Composer() {
   const allowBypass = useOffice((s) => s.settings.guard.allowBypass);
   const projects = useOffice((s) => s.projects);
   const projectId = useOffice((s) => s.projectId);
+  const contextFrom = useOffice((s) => s.contextFrom);
   const area = useRef<HTMLTextAreaElement>(null);
   const textRef = useRef(text);
   textRef.current = text;
@@ -175,8 +184,10 @@ function Composer() {
     if (dict.listening) dict.stop();
     if (mode === 'new' && bypass && allowBypass && !window.confirm('Ignorer le garde-fou pour cette demande ? L’équipe pourra utiliser ton abonnement jusqu’à 100 %, sans pause café.')) return;
     sfx('send');
-    if (mode === 'new') send({ t: 'start', prompt: t, bypass: bypass && allowBypass, projectId: projectId || undefined });
-    else send({ t: 'say', text: t });
+    if (mode === 'new') {
+      send({ t: 'start', prompt: t, bypass: bypass && allowBypass, projectId: projectId || undefined, ...(contextFrom ? { contextFrom: contextFrom.missionId } : {}) });
+      useOffice.setState({ contextFrom: null });
+    } else send({ t: 'say', text: t });
     setText('');
     setBypass(false);
   };
@@ -215,9 +226,14 @@ function Composer() {
           </button>
         )}
         {mode === 'retouch' && !replaying && (
-          <button className="btn ghost" title="Range cette mission et repars de zéro" onClick={() => { sfx('click'); send({ t: 'new' }); }}>＋ Nouvelle mission</button>
+          <button className="btn ghost" title="Range cette mission et repars de zéro (sinon, ton message continue la mission)" onClick={() => { sfx('click'); send({ t: 'new' }); }}>＋ Nouvelle demande</button>
         )}
       </div>
+      {mode === 'new' && contextFrom && !replaying && (
+        <div className="composer-opts">
+          <span className="chip on">Avec le contexte de « {contextFrom.title} » <button className="link" aria-label="Sans le contexte" onClick={() => useOffice.setState({ contextFrom: null })}>✕</button></span>
+        </div>
+      )}
       {mode === 'new' && !replaying && !demo && (projects.length > 0 || allowBypass) && (
         <div className="composer-opts">
           {projects.length > 0 && (

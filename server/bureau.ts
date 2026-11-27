@@ -7,7 +7,7 @@
 import { execFile } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { existsSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
 import { appendFile, copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,14 +15,14 @@ import { countStats, emptyStats, normRole, roleOfType, ROLES } from '../shared/a
 import type { AgentState, ClaudeInfo, FileInfo, Logged, MissionInfo, OfficeEvent, Pole, Quota, ServerMsg, Settings, TeamEntry, VersionInfo } from '../shared/protocol.ts';
 import { ClaudeProcess, Normalizer, quotaFromEvent, type ClaudeBinary, type TurnResult } from './claude.ts';
 import { agentsJson, ALWAYS_ALLOWED, chefPrompt, poleModel, SESSION_TOOLS } from './team.ts';
-import { defaultSettings, mergeSettings, modelFamily, modelLabel, type ModelId } from '../shared/settings.ts';
+import { defaultSettings, lightRequest, mergeSettings, modelFamily, modelLabel, modelRank, type ModelId } from '../shared/settings.ts';
 import { checkReviewBash, checkReviewWrite } from './policy.ts';
 import { guardDecision } from './guard.ts';
 import { History } from './history.ts';
 import { openPath } from './opener.ts';
 import { dirtyTree, enrich, ensureCommitHook, git, listDirs, mapContext, newProject, prepareBranch, projectHome, ProjectLocks, signaturesBeforePush, slug } from './projects.ts';
 import { addRow, EMPTY_BACKLOG, nextId, parseBacklog, questionCount, setRow } from './backlog.ts';
-import { checkGit, checkReadOnlyWrite, isMergeToBase, type GitContext } from './policy.ts';
+import { classifyBash, checkReadOnlyWrite, gitVerdict, isMergeToBase, withHint, type Ask, type GitContext } from './policy.ts';
 import type { ProjectBrief } from './team.ts';
 import type { BacklogRow, CarnetInfo, ProjectInfo } from '../shared/protocol.ts';
 import { blockedFor, crashReason, resultError } from './watchdog.ts';
@@ -36,6 +36,8 @@ type Json = Record<string, any>;
 /** La réponse au hook PreToolUse (voir server/hook.ts). */
 export interface HookReply { exit: 0 | 2; stdout?: string; stderr?: string }
 const pass: HookReply = { exit: 0 };
+/** permis sans passer par les permissions de Claude Code (lecture seule, ou accord de ton patron) */
+const allow: HookReply = { exit: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } }) };
 const deny = (stderr: string): HookReply => ({ exit: 2, stderr });
 
 const RULES_TEMPLATE = `# Le règlement du bureau
@@ -108,7 +110,18 @@ const versionDirName = (rel: string) => rel.replace(/[\\/]+/g, '__').replace(/[^
 
 /** La pause café en cours : quelle mission reprendre, et quand (ms). Sauvegardée pour survivre à un redémarrage. */
 interface Pause { missionId: string; resumeAt: number; text: string }
-interface State { missions: MissionInfo[]; settings: Settings; pause?: Pause; quota?: Quota; projects?: ProjectInfo[] }
+/** Une réponse (Telegram) pour une mission, gardée tant que l'équipe finit une autre demande. */
+interface Reply { missionId: string; text: string }
+interface State {
+  missions: MissionInfo[]; settings: Settings; pause?: Pause; quota?: Quota; projects?: ProjectInfo[];
+  /** la dernière mission qui a posé une question (les réponses par Telegram vont chez elle) */
+  askedBy?: string;
+  replies?: Reply[];
+}
+/** Une permission demandée par le bureau (hook) : on attend la réponse de ton patron. */
+interface HookAsk { cur: Current; who: string; asks: Ask[]; resolve: (r: 'once' | 'request' | 'no') => void; timer: NodeJS.Timeout }
+/** au-delà, une permission sans réponse est refusée (le hook attend au plus 30 min) */
+const ASK_WAIT_MS = 28 * 60 * 1000;
 
 interface Live {
   proc: ClaudeProcess;
@@ -117,6 +130,8 @@ interface Live {
   /** le dernier message envoyé (pour le renvoyer si la reprise de séance échoue) */
   lastText: string;
   resumed: boolean;
+  /** le dernier message vient de ton patron (et non d'une reprise automatique) */
+  byUser: boolean;
 }
 
 interface Current {
@@ -151,13 +166,15 @@ interface Current {
   brief?: ProjectBrief;
   /** un merge vers la base a été vérifié et autorisé : la base peut être poussée */
   baseOpen?: boolean;
+  /** les permissions accordées « pour cette demande » (leurs clés) */
+  permKeys: Set<string>;
 }
 
 function newCurrent(mission: MissionInfo, extra: Partial<Current> = {}): Current {
   return {
     mission, log: [], live: null, names: new Set(), watcher: null, fileTimers: new Map(), idleTimer: null,
     busySince: null, stopAsked: false, lastChefText: '', slots: new Map(), waiters: [], models: new Map(),
-    states: new Map(), relaunched: new Set(), ...extra,
+    states: new Map(), relaunched: new Set(), permKeys: new Set(), ...extra,
   };
 }
 
@@ -170,6 +187,15 @@ function titleOf(prompt: string) {
   if (t.length > 46) t = t.slice(0, 46).replace(/\s+\S*$/, '') + '…';
   return t ? t[0].toUpperCase() + t.slice(1) : 'Mission';
 }
+
+/** Le contexte d'une demande précédente (sa séance n'est plus reprenable), en tête de la nouvelle. */
+function contextOf(m: MissionInfo, folder: string): string {
+  const rel = path.relative(folder, m.folder) || '.';
+  return `Contexte : cette demande prend la suite de « ${m.title} », dont la séance n’est plus reprenable. Son dossier : ${rel} (lis d’abord son rapport.md s’il existe). Ce qui avait été demandé : « ${m.prompt.replace(/\s+/g, ' ').slice(0, 1200)} ».${m.final ? ` Le dernier message de Max : « ${m.final.replace(/\s+/g, ' ').slice(0, 1200)} ».` : ''} Ne redemande pas ce qui y est déjà décidé.`;
+}
+
+/** Max attend une réponse de ton patron (questions, validation) dans ce message ? */
+const waitsForAnswer = (t: string) => questionCount(t) > 0 || /À valider\s*:/i.test(t) || /\?\s*$/.test(t.trim());
 
 const cleanName = (s: string) => s.replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '');
 
@@ -194,6 +220,8 @@ export class Bureau {
   /** le jeton secret du hook (propre à ce lancement du bureau) et son adresse (posée par index.ts) */
   readonly hookToken = randomBytes(24).toString('hex');
   hookUrl = '';
+  /** les permissions demandées par le bureau, en attente de ta réponse */
+  private hookAsks = new Map<string, HookAsk>();
   /** les modèles dont le quota est plein, jusqu'à quand (ms) */
   private limits = new Map<ModelId, number>();
   /** l'historique des agents, sur le disque */
@@ -233,9 +261,23 @@ export class Bureau {
     // une mission restée « au travail » (le bureau a été coupé pendant qu'elle tournait) est arrêtée
     for (const m of this.state.missions) if (m.status === 'working') m.status = 'stopped';
     await this.history.init(this.settings.follow.keepMonths, this.state.missions, this.recDir).catch((e) => console.error('  ⚠  Historique des agents :', e instanceof Error ? e.message : e));
+    await this.markInterrupted().catch(() => {});
     await this.restore();
     this.startProbing();
     setInterval(() => this.watchdog(), 30_000).unref();
+  }
+
+  /**
+   * Les agents d'une demande coupée (bureau arrêté pendant qu'ils travaillaient) passent à « Interrompu » :
+   * une ligne de plus dans l'historique et dans l'enregistrement de la mission, sans réécrire l'ancien.
+   */
+  private async markInterrupted() {
+    const stale = await this.history.interruptStale();
+    const at = Date.now();
+    for (const { missionId, id } of stale) {
+      const ev: OfficeEvent = { k: 'state', who: id, state: 'interrupted', reason: 'interrompu (bureau redémarré)' };
+      await appendFile(path.join(this.recDir, `${missionId}.jsonl`), JSON.stringify({ at, ev }) + '\n').catch(() => {});
+    }
   }
 
   claudeInfo(): ClaudeInfo {
@@ -387,7 +429,7 @@ export class Bureau {
       const cur = this.current;
       if (cur) this.record(cur, { k: 'state', who: 'chef', state: 'working', reason: 'Reprise après la pause café' });
       this.notify('pause', `Fin de la pause café : l’équipe reprend « ${cur?.mission.title ?? ''} ».`);
-      this.say(p.text);
+      this.say(p.text, { auto: true });
     } catch (e) {
       const cur = this.current;
       if (cur) this.record(cur, { k: 'error', message: `La pause café est finie, mais je n’ai pas pu reprendre : ${e instanceof Error ? e.message : String(e)}` });
@@ -415,11 +457,90 @@ export class Bureau {
       } catch { /* ligne abîmée : on la saute */ }
     }
     const proj = m.projectId ? this.project(m.projectId) : null;
-    const brief = proj ? await this.projectBrief(proj, m, m.branch ?? '', (/^\[Demande (D-\d+)\]/.exec(log.find((x) => x.ev.k === 'start')?.ev.k === 'start' ? (log.find((x) => x.ev.k === 'start')!.ev as { text: string }).text : '') ?? [])[1] ?? '', null).catch(() => undefined) : undefined;
+    const firstText = (log.find((x) => x.ev.k === 'start')?.ev as { text?: string } | undefined)?.text ?? '';
+    const requestId = m.requestId ?? /^\[Demande (D-\d+)\]/.exec(firstText)?.[1] ?? '';
+    const brief = proj ? await this.projectBrief(proj, m, m.branch ?? '', requestId, null).catch(() => undefined) : undefined;
     const cur = newCurrent(m, { log, names, lastChefText: m.final ?? '', quotaBase: this.weekUsed(), brief });
     this.current = cur;
     this.watch(cur);
     this.broadcast({ t: 'mission', mission: m });
+  }
+
+  /** La séance Claude Code existe-t-elle encore ? (Claude Code range ses séances dans ~/.claude/projects/<dossier>/<séance>.jsonl) */
+  sessionResumable(sessionId?: string): boolean {
+    if (!sessionId || !/^[\w-]+$/.test(sessionId)) return false;
+    const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
+    try { return readdirSync(root).some((d) => existsSync(path.join(root, d, `${sessionId}.jsonl`))); } catch { return false; }
+  }
+
+  /**
+   * « Reprendre » : la mission revient sur le bureau avec sa séance, et ton prochain message la continue.
+   * Si sa séance n'existe plus, le bureau le dit et propose une nouvelle demande avec son contexte (renvoie false).
+   */
+  async resume(missionId: string): Promise<boolean> {
+    const m = this.mission(missionId);
+    if (!m) throw new Error('Mission introuvable.');
+    if (this.current?.mission.id === missionId) { this.broadcast(this.hello()); return true; }
+    if (this.current?.mission.status === 'working') throw new Error('L’équipe est déjà sur une demande : attends qu’elle la rende, ou arrête-la.');
+    if (!this.sessionResumable(m.sessionId)) {
+      this.broadcast({ t: 'resume_failed', missionId: m.id, title: m.title, reason: m.sessionId ? 'Claude Code a effacé cette séance (trop ancienne ou introuvable).' : 'Cette mission n’a pas de séance enregistrée.' });
+      return false;
+    }
+    await this.reopen(missionId);
+    this.broadcast(this.hello());
+    return true;
+  }
+
+  /**
+   * Une réponse envoyée par Telegram : elle va à la mission qui a posé la question, même terminée (elle est reprise),
+   * jamais à une nouvelle demande. Si l'équipe finit une autre demande, la réponse attend la fin de celle-ci.
+   */
+  async replyFromTelegram(text: string, isAnswer: boolean): Promise<string> {
+    const cur = this.current;
+    const target = (isAnswer && this.state.askedBy && this.mission(this.state.askedBy)) || cur?.mission || (this.state.askedBy ? this.mission(this.state.askedBy) : null);
+    if (!target) return 'Aucune demande à qui répondre : écris /demande &lt;projet&gt; &lt;texte&gt;.';
+    if (cur?.mission.id === target.id) { this.say(text); return 'Transmis à Max ✅'; }
+    if (cur?.mission.status === 'working') {
+      (this.state.replies ??= []).push({ missionId: target.id, text });
+      this.save();
+      return `L’équipe finit « ${cur.mission.title} » : ta réponse ira à « ${target.title} » juste après.`;
+    }
+    if (!(await this.resume(target.id))) return `Je ne peux plus reprendre « ${target.title} » (séance effacée). Ouvre le bureau pour lancer une nouvelle demande avec son contexte.`;
+    this.say(text);
+    return `Transmis à Max ✅ (« ${target.title} » reprend)`;
+  }
+
+  /** Après une demande : d'abord les réponses gardées (Telegram), sinon la suivante du carnet (si le projet enchaîne). */
+  private async afterFinish(cur: Current) {
+    if (this.current !== cur || cur.mission.status === 'working') return;
+    const r = this.state.replies?.shift();
+    if (r) {
+      this.save();
+      try {
+        if (await this.resume(r.missionId)) { this.say(r.text); return; }
+      } catch (e) { console.error('  ⚠  Réponse gardée :', e instanceof Error ? e.message : e); }
+    }
+    await this.chainNext(cur).catch((e) => console.error('  ⚠  Enchaînement :', e instanceof Error ? e.message : e));
+  }
+
+  /**
+   * « Enchaîner les demandes » : la demande s'est bien terminée, sans question ni validation en attente, et le garde-fou
+   * le permet → Max lance la suivante du carnet qui est prête (« À faire »).
+   */
+  private async chainNext(cur: Current) {
+    const m = cur.mission;
+    const proj = m.projectId ? this.project(m.projectId) : null;
+    if (!proj || proj.chain === false || m.status !== 'done' || cur.budgetAsked) return;
+    if (waitsForAnswer(m.final ?? '')) return;
+    if (this.limitReason() || this.state.pause) return;
+    if (guardDecision({ now: Date.now(), quota: this.quota, guard: this.settings.guard, base: cur.quotaBase, bypass: m.bypass }).kind !== 'ok') return;
+    const own = this.carnetFile({ ...proj, backlogFile: '' });
+    const rows = parseBacklog(await readFile(own.abs, 'utf8').catch(() => '')) ?? [];
+    if (rows.some((r) => /attend ta r[ée]ponse/i.test(r.state))) return;
+    const next = rows.find((r) => r.state === 'À faire' && !/bloqu/i.test(r.wait));
+    if (!next) return;
+    this.notify('done', `Je passe à ${next.id} : ${next.title.split(' :: ')[0]}`);
+    await this.carnetLaunch(proj.id, next.id);
   }
 
   /** Au démarrage : on remet sur le bureau la mission en pause, ou la dernière, pour reprendre où on en était. */
@@ -434,11 +555,14 @@ export class Bureau {
   private mission(id: string) { return this.state.missions.find((m) => m.id === id) ?? null; }
 
   // ── Une nouvelle mission ──
-  async start(prompt: string, opts: { bypass?: boolean; projectId?: string } = {}) {
+  async start(prompt: string, opts: { bypass?: boolean; projectId?: string; contextFrom?: string; requestId?: string } = {}) {
     const text = prompt.trim();
     const bypass = opts.bypass === true && this.settings.guard.allowBypass;
     if (!text) throw new Error('Dis à Max ce que tu veux.');
     if (!this.claude) throw new Error('Claude Code n’est pas installé sur cet ordinateur.');
+    // « Nouvelle demande avec le contexte » : même projet que la demande d'origine
+    const from = opts.contextFrom ? this.mission(opts.contextFrom) : null;
+    if (from?.projectId && !opts.projectId) opts = { ...opts, projectId: from.projectId };
     const proj = opts.projectId ? this.project(opts.projectId) : null;
     if (opts.projectId && !proj) throw new Error('Ce projet n’existe plus.');
     // le verrou : une demande est déjà en cours sur ce projet → la nouvelle attend dans le carnet
@@ -455,16 +579,21 @@ export class Bureau {
     const now = new Date();
     const title = titleOf(text);
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}h${pad(now.getMinutes())}`;
-    let folder = path.join(this.missionsDir, cleanName(`${stamp} · ${title.replace(/…$/, '')}`).slice(0, 90));
-    for (let n = 2; existsSync(folder); n++) folder = path.join(this.missionsDir, cleanName(`${stamp} · ${title.replace(/…$/, '')} ${n}`).slice(0, 90));
+    // dans un projet : le dossier de la demande est rangé avec la mémoire du projet (Projets/<projet>/demandes/<n°-titre>/)
+    if (proj && !existsSync(proj.path)) throw new Error(`Le dossier du projet ${proj.name} est introuvable.`);
+    const requestId = proj ? (opts.requestId && /^D-\d+$/.test(opts.requestId) ? opts.requestId : await this.nextRequestId(proj)) : '';
+    const parent = proj ? path.join(projectHome(this.dir, proj), 'demandes') : this.missionsDir;
+    const base = proj ? `${requestId} · ${title.replace(/…$/, '')}` : `${stamp} · ${title.replace(/…$/, '')}`;
+    let folder = path.join(parent, cleanName(base).slice(0, 90));
+    for (let n = 2; existsSync(folder); n++) folder = path.join(parent, cleanName(`${base} ${n}`).slice(0, 90));
     await mkdir(folder, { recursive: true });
 
     const mission: MissionInfo = {
       id: 'm' + Date.now().toString(36), title, prompt: text, folder, createdAt: Date.now(), workMs: 0,
       status: 'working', stats: emptyStats(), files: [], ...(bypass ? { bypass: true } : {}),
-      ...(proj ? { projectId: proj.id } : {}),
+      ...(proj ? { projectId: proj.id, requestId } : {}), ...(from ? { contextFrom: from.id } : {}),
     };
-    const brief = proj ? await this.prepareProject(proj, mission) : undefined;
+    const brief = proj ? await this.prepareProject(proj, mission, requestId) : undefined;
     this.state.missions.push(mission);
     if (this.state.missions.length > MAX_MISSIONS) this.state.missions.splice(0, this.state.missions.length - MAX_MISSIONS);
     this.save();
@@ -478,11 +607,12 @@ export class Bureau {
       void this.sendProjects();
     }
     const mapHint = brief?.diffSince ? ' (Étape 0 : la carte du projet date d’un ancien commit, mets-la à jour à partir du diff de tes consignes.)' : brief && !brief.map ? ' (Étape 0 : il n’y a pas encore de carte du projet.)' : '';
-    this.say(brief ? `[Demande ${brief.requestId}]${mapHint} ${text}` : text);
+    const context = from ? `${contextOf(from, folder)}\n\n` : '';
+    this.say(brief ? `[Demande ${brief.requestId}]${mapHint} ${context}${text}` : `${context}${text}`);
   }
 
   /** Parler à Max : la mission, puis les retouches. S'il s'était endormi, il reprend sa séance. */
-  say(text: string) {
+  say(text: string, opts: { auto?: boolean } = {}) {
     const cur = this.current;
     if (!cur) throw new Error('Lance d’abord une mission.');
     const clean = text.trim();
@@ -503,6 +633,7 @@ export class Bureau {
     if (!l || !l.proc.alive) l = this.spawn(cur);
     if (cur.idleTimer) { clearTimeout(cur.idleTimer); cur.idleTimer = null; }
     l.lastText = clean;
+    l.byUser = !opts.auto;
     cur.stopAsked = false;
     // le budget de la demande était atteint et Max a demandé : ta réponse lui rouvre un budget
     if (cur.budgetAsked) { cur.budgetAsked = false; cur.quotaBase = this.weekUsed(); }
@@ -521,7 +652,12 @@ export class Bureau {
     const s = this.settings;
     const resume = opts.fresh ? undefined : cur.mission.sessionId;
     const limited = this.limited();
-    const chefModel = poleModel(s, 'chef', limited) ?? s.team.chef.model;
+    let chefModel = poleModel(s, 'chef', limited) ?? s.team.chef.model;
+    // une demande de rangement, de docs ou de git : Max passe sur Sonnet (sauf réglage contraire)
+    const light = s.lightSonnet && lightRequest(cur.mission.prompt) && modelRank(chefModel) > modelRank('sonnet');
+    if (light) chefModel = 'sonnet';
+    const from = cur.mission.contextFrom ? this.mission(cur.mission.contextFrom) : null;
+    const addDirs = [...(cur.brief ? [cur.mission.folder, path.dirname(cur.brief.mapPath)] : []), ...(from && !cur.brief ? [from.folder] : [])];
     // le Normalizer renvoie vers la mission courante ; « proc » est connu dès que la ligne suivante a tourné
     const norm: Normalizer = new Normalizer({
       emit: (ev) => { if (cur.live?.proc === proc) this.onEvent(cur, ev); },
@@ -534,7 +670,7 @@ export class Bureau {
     const proc: ClaudeProcess = new ClaudeProcess(
       {
         bin: this.claude.path, cwd: cur.brief ? this.project(cur.mission.projectId ?? '')?.path ?? cur.mission.folder : cur.mission.folder,
-        addDirs: cur.brief ? [cur.mission.folder, path.dirname(cur.brief.mapPath)] : undefined, permissionMode: s.permission === 'ask' ? 'acceptEdits' : 'auto',
+        addDirs: addDirs.length ? addDirs : undefined, permissionMode: s.permission === 'ask' ? 'acceptEdits' : 'auto',
         model: chefModel, effort: s.team.chef.effort, resume, tools: SESSION_TOOLS, allowedTools: ALWAYS_ALLOWED,
         agents: agentsJson(s, limited), appendSystemPrompt: chefPrompt(readRules(this.dir), s, limited, cur.brief), useApiKey: process.env.BUREAU_USE_API_KEY === '1',
         settings: this.hookSettings(), env: { BUREAU_HOOK_URL: this.hookUrl, BUREAU_HOOK_TOKEN: this.hookToken },
@@ -546,13 +682,13 @@ export class Bureau {
       },
       (code, signal, stderr) => this.onExit(cur, proc, code, signal, stderr),
     );
-    const l: Live = { proc, norm, stopping: false, lastText: '', resumed: !!resume };
+    const l: Live = { proc, norm, stopping: false, lastText: '', resumed: !!resume, byUser: false };
     cur.live = l;
     proc.start();
     const before = cur.models.get('chef');
     if (before !== chefModel) {
       cur.models.set('chef', chefModel);
-      this.record(cur, { k: 'model', who: 'chef', model: chefModel, effort: s.team.chef.effort, ...(chefModel !== s.team.chef.model ? { from: s.team.chef.model, reason: `quota de ${modelLabel(s.team.chef.model)} plein` } : {}) });
+      this.record(cur, { k: 'model', who: 'chef', model: chefModel, effort: s.team.chef.effort, ...(chefModel !== s.team.chef.model ? { from: s.team.chef.model, reason: light ? 'demande de rangement, docs ou git' : `quota de ${modelLabel(s.team.chef.model)} plein` } : {}) });
     }
     return l;
   }
@@ -656,30 +792,46 @@ export class Bureau {
     // les demandes encore ouvertes n'ont plus d'objet
     const l = cur.live;
     if (l) for (const id of l.norm.pendingRequests()) { l.norm.forgetRequest(id); this.record(cur, { k: 'ask_done', requestId: id, allow: false, cancelled: true }); }
+    for (const [id, h] of this.hookAsks) if (h.cur === cur) this.settleAsk(id, 'no', true);
     this.record(cur, { k: 'end', ok, text: m.final ?? '', ms, stopped });
     if (cur.budgetAsked) {
       const q = `J’ai consommé ${Math.round((cur.budgetUsed ?? 0) * 100)} % de la semaine sur cette demande (budget : ${this.settings.guard.budget} %). Je continue ?`;
       this.record(cur, { k: 'say', who: 'chef', text: q });
       cur.lastChefText = q;
+      this.state.askedBy = m.id;
       this.notify('question', `Max : ${q}`);
-    } else if (!stopped && ok && (questionCount(m.final ?? '') > 0 || /À valider\s*:/i.test(m.final ?? '') || /\?\s*$/.test((m.final ?? '').trim()))) {
+    } else if (!stopped && ok && waitsForAnswer(m.final ?? '')) {
+      this.state.askedBy = m.id;
       this.notify('question', `Max (${m.title}) :\n${(m.final ?? '').slice(0, 3000)}`);
     } else if (!stopped) this.notify(ok ? 'done' : 'crash', ok ? `Demande terminée : ${m.title}` : `La demande « ${m.title} » s’est mal terminée.`);
     this.broadcast({ t: 'mission', mission: m });
     this.save();
+    // l'équipe est libre : une réponse gardée, ou la demande suivante du carnet
+    setTimeout(() => void this.afterFinish(cur), 1500).unref();
     // Max reste disponible un moment pour les retouches, puis s'endort (il reprendra sa séance si on lui reparle)
     if (cur.idleTimer) clearTimeout(cur.idleTimer);
     cur.idleTimer = setTimeout(() => {
       if (this.current === cur && cur.mission.status !== 'working' && cur.live) { cur.live.stopping = true; cur.live.proc.stop(); }
     }, IDLE_STOP_MS);
+    cur.idleTimer.unref();
   }
 
   private onExit(cur: Current, proc: ClaudeProcess, code: number | null, signal: string | null, stderr: string) {
     const l = cur.live;
     if (!l || l.proc !== proc) return;
     cur.live = null;
+    // une mission rangée (puis peut-être reprise : c'est le même objet) : son ancien processus ne la touche plus
+    if (this.current !== cur) return;
     const failed = !l.stopping && (code !== 0 || signal !== null);
-    // La séance à reprendre n'existe plus (Claude Code efface les vieilles séances) : on repart de zéro.
+    // La séance à reprendre n'existe plus (Claude Code efface les vieilles séances). Ton message : le bureau le dit
+    // et propose une nouvelle demande avec le contexte. Une reprise automatique (pause café, relance) : on repart de zéro.
+    if (failed && l.resumed && !l.norm.started && l.lastText && this.current === cur && l.byUser) {
+      cur.mission.sessionId = undefined;
+      this.record(cur, { k: 'error', message: 'Je ne retrouve plus notre ancienne conversation : elle n’est plus reprenable.' });
+      this.finish(cur, false, cur.lastChefText, 0, true);
+      this.broadcast({ t: 'resume_failed', missionId: cur.mission.id, title: cur.mission.title, reason: 'Claude Code ne retrouve plus cette séance.' });
+      return;
+    }
     if (failed && l.resumed && !l.norm.started && l.lastText && this.current === cur) {
       this.record(cur, { k: 'error', message: 'Je ne retrouve plus notre ancienne conversation : je reprends de zéro, avec ton dernier message.' });
       cur.mission.sessionId = undefined;
@@ -732,7 +884,8 @@ export class Bureau {
       cur.watcher = watch(folder, { recursive: true }, (_type, name) => {
         if (!name) return;
         const rel = String(name);
-        if (rel.split(path.sep).some((p) => p.startsWith('.') || p === 'node_modules')) return;
+        // les notes internes des pôles (interne/) restent dans le dossier, sans être montrées comme des rendus
+        if (rel.split(path.sep).some((p) => p.startsWith('.') || p === 'node_modules') || rel.split(path.sep)[0] === 'interne') return;
         const prev = cur.fileTimers.get(rel);
         if (prev) clearTimeout(prev);
         cur.fileTimers.set(rel, setTimeout(() => { cur.fileTimers.delete(rel); void this.fileChanged(cur, rel); }, 350));
@@ -881,16 +1034,85 @@ export class Bureau {
     let why: string | null = null;
     if (tool === 'Bash') {
       const cmd = String(input.command ?? '');
-      if (pole === 'relecture') why = checkReviewBash(cmd);
-      why ??= await this.projectBash(cur, cmd);
+      if (pole === 'relecture') { why = checkReviewBash(cmd); if (why) why = withHint(why, 'review'); }
+      const git = why ? null : await this.projectBash(cur, cmd);
+      if (git?.why) why = withHint(git.why, 'git');
+      if (!why) {
+        const v = classifyBash(cmd, await this.shellContext(cur));
+        if (v.kind === 'deny') why = withHint(v.why, 'shell');
+        else {
+          const asks = [...(git?.asks ?? []), ...(v.kind === 'ask' ? v.asks : [])].filter((a) => !cur.permKeys.has(a.key));
+          if (asks.length) {
+            const r = await this.askPermission(cur, who, cmd, asks);
+            if (r === 'no') why = withHint(`Refusé par ton patron : ${asks.map((a) => a.label).join(' ; ')}.`, 'refused');
+            else return allow;
+          } else if (v.kind === 'read' || (git?.asks.length ?? 0) > 0 || v.kind === 'ask') return allow;
+        }
+      }
     } else {
       const file = String(input.file_path ?? input.notebook_path ?? '');
       if (pole === 'relecture') why = checkReviewWrite(file);
       why ??= this.projectWrite(cur, file);
     }
     if (!why) return pass;
-    this.record(cur, { k: 'note', who, text: `Refusé : ${why}`, level: 'warn' });
+    this.record(cur, { k: 'note', who, text: `Refusé : ${why.split('\n')[0]}`, level: 'warn' });
     return deny(why);
+  }
+
+  /** Où une commande peut écrire : le projet et les dossiers de la demande (ou seulement le dossier de la mission). */
+  private async shellContext(cur: Current) {
+    const proj = cur.mission.projectId ? this.project(cur.mission.projectId) : null;
+    const dirs = proj ? [proj.path, cur.mission.folder, projectHome(this.dir, proj)] : [cur.mission.folder];
+    let known: Set<string> | undefined;
+    try {
+      const pkg = JSON.parse(await readFile(path.join(dirs[0], 'package.json'), 'utf8')) as Json;
+      known = new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {})]);
+    } catch { /* pas de package.json */ }
+    return { cwd: dirs[0], dirs, home: os.homedir(), strictRedirects: !!proj, known };
+  }
+
+  /**
+   * Une permission demandée par le bureau : la main levée dans le bureau (Oui une fois / Oui pour cette demande / Non),
+   * et la question sur Telegram (si relié), avec la commande exacte. Sans réponse au bout de 28 min : non.
+   */
+  private askPermission(cur: Current, who: string, cmd: string, asks: Ask[]): Promise<'once' | 'request' | 'no'> {
+    const requestId = `perm-${randomBytes(6).toString('hex')}`;
+    const label = asks.map((a) => a.label).join(' · ');
+    this.record(cur, { k: 'ask', who, requestId, tool: 'Bash', label, detail: cmd, full: false, scoped: true });
+    cur.states.set(who, 'waiting');
+    this.state.askedBy = cur.mission.id;
+    const name = who === 'chef' ? 'Max' : (cur.log.find((x) => x.ev.k === 'hire' && x.ev.id === who)?.ev as { name?: string } | undefined)?.name ?? 'Un agent';
+    this.notify('question', `${name} demande la permission : ${label}\nCommande : ${cmd.slice(0, 800)}\nRéponds « oui » (une fois), « oui demande » (pour toute la demande) ou « non ».`);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.settleAsk(requestId, 'no', true), ASK_WAIT_MS);
+      timer.unref();
+      this.hookAsks.set(requestId, { cur, who, asks, resolve, timer });
+    });
+  }
+
+  /** La réponse à une permission du bureau (bouton, Telegram, ou délai dépassé). */
+  private settleAsk(requestId: string, r: 'once' | 'request' | 'no', cancelled = false) {
+    const h = this.hookAsks.get(requestId);
+    if (!h) return false;
+    this.hookAsks.delete(requestId);
+    clearTimeout(h.timer);
+    if (r === 'request') for (const a of h.asks) h.cur.permKeys.add(a.key);
+    if (h.cur.states.get(h.who) === 'waiting') h.cur.states.set(h.who, 'working');
+    this.record(h.cur, { k: 'ask_done', requestId, allow: r !== 'no', ...(cancelled ? { cancelled: true } : {}) });
+    if (r === 'request') this.record(h.cur, { k: 'note', who: h.who, text: `Permis pour toute la demande : ${h.asks.map((a) => a.label).join(' ; ')}`, level: 'info' });
+    h.resolve(r);
+    return true;
+  }
+
+  /** Une permission du bureau attend-elle une réponse ? (pour lire « oui » / « non » sur Telegram) */
+  hasPermissionAsk() { return this.hookAsks.size > 0; }
+
+  /** « oui », « oui demande » ou « non » sur Telegram : la réponse à la dernière permission demandée. */
+  answerLatestPermission(r: 'once' | 'request' | 'no'): string {
+    const id = [...this.hookAsks.keys()].pop();
+    if (!id) return 'Aucune permission en attente.';
+    this.settleAsk(id, r);
+    return r === 'no' ? 'Refusé ❌' : r === 'request' ? 'Permis pour toute la demande ✅' : 'Permis (une fois) ✅';
   }
 
   /** Un appel Agent : le modèle du pôle (ou son repli), sa puissance, et une place libre. */
@@ -911,10 +1133,12 @@ export class Bureau {
     if (!(await this.takeSlot(cur, pole, id))) {
       return deny(`Le pôle ${ROLES[pole].label} est complet (${conf.places} place${conf.places > 1 ? 's' : ''}) depuis trop longtemps : attends qu’un agent ait fini, puis rappelle-le.`);
     }
-    // petites tâches : Max peut demander Haiku (et une puissance faible) ; sinon, le modèle et la puissance du pôle
-    const small = input.model === 'haiku';
-    const finalModel = small ? 'haiku' : model;
-    const effort = small ? String(input.effort ?? 'low') : conf.effort;
+    // petites tâches : Max peut demander Haiku (et une puissance faible) ; rangement, docs ou git : Sonnet pour la Rédaction ;
+    // jamais un modèle plus fort que celui du pôle. Sinon, le modèle et la puissance du pôle.
+    const asked = typeof input.model === 'string' ? (modelFamily(input.model) ?? '') : '';
+    const small = asked !== '' && modelRank(asked) < modelRank(model) && (asked === 'haiku' || (asked === 'sonnet' && (pole === 'redaction' || this.settings.lightSonnet)));
+    const finalModel = small ? asked : model;
+    const effort = small ? (asked === 'haiku' ? String(input.effort ?? 'low') : String(input.effort ?? conf.effort)) : conf.effort;
     cur.models.set(id, finalModel);
     this.record(cur, { k: 'model', who: id, model: finalModel, effort, ...(!small && model !== conf.model ? { from: conf.model, reason: `quota de ${modelLabel(conf.model)} plein` } : {}) });
     return {
@@ -969,7 +1193,8 @@ export class Bureau {
     if (!cur || !l || cur.mission.status !== 'working') return;
     const delay = this.settings.follow.blockedMin;
     const now = Date.now();
-    const waiting = (id: string) => l.norm.pendingRequests().length > 0 && (id === 'chef' || cur.states.get(id) === 'waiting') || cur.states.get(id) === 'queued';
+    const asking = (id: string) => [...this.hookAsks.values()].some((h) => h.cur === cur && h.who === id);
+    const waiting = (id: string) => l.norm.pendingRequests().length > 0 && (id === 'chef' || cur.states.get(id) === 'waiting') || cur.states.get(id) === 'queued' || asking(id);
     const ids = ['chef', ...l.norm.present];
     for (const id of ids) {
       // Max attend son équipe : ce n'est pas un blocage tant qu'un agent travaille
@@ -1004,37 +1229,38 @@ export class Bureau {
   onNotify: ((kind: 'crash' | 'question' | 'pause' | 'done' | 'blocked' | 'model', text: string) => void) | null = null;
 
   /** Les règles d'un projet pour une commande : interdits git, merge seulement si tout est vert, pas de signature d'IA. */
-  private async projectBash(cur: Current, cmd: string): Promise<string | null> {
+  private async projectBash(cur: Current, cmd: string): Promise<{ why: string | null; asks: Ask[] } | null> {
     const proj = cur.mission.projectId ? this.project(cur.mission.projectId) : null;
     if (!proj) return null;
+    const no = (why: string) => ({ why, asks: [] as Ask[] });
     // l'équipe ne sort pas du projet (ni des dossiers de la demande)
     const allowed = [proj.path, cur.mission.folder, projectHome(this.dir, proj)];
     for (const m of cmd.matchAll(/(?:^|[;&|]\s*)cd\s+("[^"]+"|'[^']+'|\S+)/g)) {
       const target = m[1].replace(/^["']|["']$/g, '').replace(/^~(?=\/|$)/, os.homedir());
       if (!path.isAbsolute(target)) continue;
       const abs = path.resolve(target);
-      if (!allowed.some((d) => abs === d || abs.startsWith(d + path.sep))) return `L’équipe reste dans le projet : « cd ${m[1]} » est refusé.`;
+      if (!allowed.some((d) => abs === d || abs.startsWith(d + path.sep))) return no(`L’équipe reste dans le projet : « cd ${m[1]} » est refusé.`);
     }
     if (!/\bgit\b|merge/.test(cmd)) return null;
-    const ctx = await this.gitContext(cur, proj);
-    const why = checkGit(cmd, ctx);
-    if (why) return why;
+    const ctx = await this.gitContext(cur, proj, /\bpush\b/.test(cmd));
+    const verdict = gitVerdict(cmd, ctx);
+    if (verdict.why) return verdict;
     if (/\bgit\b[^;&|]*\bpush\b/.test(cmd)) {
       const sig = await signaturesBeforePush(proj.path, proj.base);
-      if (sig) return `Refusé par le bureau : le commit ${sig} contient une signature d’IA (Co-Authored-By, « Generated with »…). Réécris son message sans, avec l’accord de ton patron.`;
+      if (sig) return no(`Refusé par le bureau : le commit ${sig} contient une signature d’IA (Co-Authored-By, « Generated with »…). Réécris son message sans, avec l’accord de ton patron.`);
     }
     if (isMergeToBase(cmd, ctx)) {
       // le merge vers la base n'est permis que si lint, typage, tests et build sont verts : le bureau les lance lui-même
       const checks = proj.commands.filter((c) => c.confirmed && c.name !== 'Merge');
-      if (!checks.length) return 'Merge refusé : aucune commande de vérification confirmée pour ce projet (fiche du projet, « Commandes détectées »).';
+      if (!checks.length) return no('Merge refusé : aucune commande de vérification confirmée pour ce projet (fiche du projet, « Commandes détectées »).');
       for (const c of checks) {
         const r = await new Promise<{ ok: boolean; out: string }>((resolve) => execFile('sh', ['-c', c.cmd], { cwd: proj.path, timeout: 15 * 60_000, maxBuffer: 16 * 1024 * 1024 }, (e, out, err) => resolve({ ok: !e, out: `${out}${err}`.slice(-600) })));
         this.record(cur, { k: 'note', who: 'chef', text: `Vérification avant merge : ${c.name} (${c.cmd}) ${r.ok ? 'verte' : 'en échec'}.`, level: r.ok ? 'info' : 'warn' });
-        if (!r.ok) return `Merge refusé : ${c.name} (${c.cmd}) n’est pas vert.\n${r.out}`;
+        if (!r.ok) return no(`Merge refusé : ${c.name} (${c.cmd}) n’est pas vert.\n${r.out}`);
       }
       cur.baseOpen = true;
     }
-    return null;
+    return verdict;
   }
 
   private projectWrite(cur: Current, file: string): string | null {
@@ -1043,10 +1269,20 @@ export class Bureau {
     return checkReadOnlyWrite(file, proj.path);
   }
 
-  private async gitContext(cur: Current, proj: ProjectInfo): Promise<GitContext> {
+  private async gitContext(cur: Current, proj: ProjectInfo, push = false): Promise<GitContext> {
     const current = (await git(proj.path, ['branch', '--show-current'])).out;
     const merge = proj.commands.find((c) => c.name === 'Merge' && c.confirmed)?.cmd;
-    return { access: proj.access, base: proj.base, work: cur.mission.branch ?? '', forbidden: proj.forbidden, current, mergeScript: merge?.replace(/^(npm run|pnpm|yarn|bash|sh)\s+/, ''), baseOpen: cur.baseOpen };
+    const ctx: GitContext = { access: proj.access, base: proj.base, work: cur.mission.branch ?? '', forbidden: proj.forbidden, current, mergeScript: merge?.replace(/^(npm run|pnpm|yarn|bash|sh)\s+/, ''), baseOpen: cur.baseOpen };
+    if (push) {
+      // pour un push : les branches et tags qui existent, et les branches distantes déjà fusionnées dans la base
+      const lines = async (args: string[]) => (await git(proj.path, args)).out.split('\n').map((x) => x.trim()).filter(Boolean);
+      const strip = (b: string) => b.replace(/^\*\s*/, '').replace(/^remotes\//, '').replace(/^[\w.-]+\//, '');
+      ctx.branches = [...new Set([...(await lines(['branch', '--format=%(refname:short)'])), ...(await lines(['branch', '-r', '--format=%(refname:short)'])).map(strip)])];
+      ctx.tags = await lines(['tag', '--list']);
+      const baseRef = (await git(proj.path, ['rev-parse', '--verify', '--quiet', `origin/${proj.base}`])).out ? `origin/${proj.base}` : proj.base;
+      ctx.mergedRemote = (await lines(['branch', '-r', '--merged', baseRef, '--format=%(refname:short)'])).map(strip).filter((b) => b !== 'HEAD' && b !== proj.base);
+    }
+    return ctx;
   }
 
   /** Où en est l'équipe (pour /status sur Telegram). */
@@ -1105,6 +1341,8 @@ export class Bureau {
   async updateProject(id: string, patch: Partial<ProjectInfo>) {
     const p = this.project(id);
     if (!p) throw new Error('Ce projet n’existe plus.');
+    // l'interrupteur « Enchaîner les demandes » se change à tout moment
+    if (Object.keys(patch).length === 1 && typeof patch.chain === 'boolean') { p.chain = patch.chain; this.save(); await this.sendProjects(); return; }
     if (this.locks.holder(id) && this.current?.mission.status === 'working') throw new Error('Une demande travaille sur ce projet : attends qu’elle soit finie pour changer ses réglages.');
     const str = (v: unknown, n = 200) => (typeof v === 'string' ? v.trim().slice(0, n) : null);
     const name = str(patch.name, 60); if (name) p.name = name;
@@ -1118,6 +1356,7 @@ export class Bureau {
     if (Array.isArray(patch.forbidden)) p.forbidden = patch.forbidden.map((x) => String(x).trim()).filter((x) => /^[\w./-]+$/.test(x)).slice(0, 20);
     if (Array.isArray(patch.commands)) p.commands = patch.commands.slice(0, 12).map((c) => ({ name: String(c.name ?? '').slice(0, 30), cmd: String(c.cmd ?? '').slice(0, 300), confirmed: c.confirmed === true })).filter((c) => c.name && c.cmd);
     if (Array.isArray(patch.readFirst)) p.readFirst = patch.readFirst.map((x) => String(x).trim().slice(0, 200)).filter((x) => x && !x.includes('..') && !path.isAbsolute(x)).slice(0, 20);
+    if (typeof patch.chain === 'boolean') p.chain = patch.chain;
     if (typeof patch.backlogFile === 'string') { const f = patch.backlogFile.trim(); if (!f.includes('..') && !path.isAbsolute(f)) p.backlogFile = f.slice(0, 200); }
     this.save();
     await this.sendProjects();
@@ -1178,6 +1417,8 @@ export class Bureau {
       questions: cur ? questionCount(last) : 0,
       tests: (rows ?? []).filter((r) => /ton test/i.test(r.step) && !/termin/i.test(r.state)).length,
       toValidate: cur && cur.mission.status !== 'working' ? (/À valider\s*:\s*(.+)$/im.exec(last)?.[1] ?? '') : '',
+      missions: Object.fromEntries(this.state.missions.filter((m) => m.projectId === p.id && m.requestId).sort((a, b) => a.createdAt - b.createdAt)
+        .map((m) => [m.requestId!, { missionId: m.id, working: m.status === 'working' }])),
     };
   }
 
@@ -1191,21 +1432,28 @@ export class Bureau {
     if (!row) throw new Error('Demande introuvable dans le carnet.');
     const text = row.title.includes(' :: ') ? row.title.split(' :: ').slice(1).join(' :: ') : row.title;
     await writeFile(own.abs, setRow(raw, id, { state: 'Lancée', wait: '—' }));
-    await this.start(text, { projectId });
+    await this.start(text, { projectId, requestId: id });
   }
 
   /** Prépare une demande dans un projet : numéro, branche, hook, arbre sale, carte, consignes. */
-  private async prepareProject(p: ProjectInfo, m: MissionInfo): Promise<ProjectBrief & { notes: string[] }> {
-    const notes: string[] = [];
-    if (!existsSync(p.path)) throw new Error(`Le dossier du projet ${p.name} est introuvable.`);
-    await mkdir(projectHome(this.dir, p), { recursive: true });
-    // le numéro de la demande, et sa ligne dans le carnet du bureau
+  /** Le numéro de la prochaine demande d'un projet (D-001…), d'après son carnet et celui du bureau. */
+  private async nextRequestId(p: ProjectInfo): Promise<string> {
     const f = this.carnetFile(p);
-    const raw = await readFile(f.abs, 'utf8').catch(() => (f.external ? '' : EMPTY_BACKLOG(p.name)));
+    const raw = await readFile(f.abs, 'utf8').catch(() => '');
+    const own = await readFile(this.carnetFile({ ...p, backlogFile: '' }).abs, 'utf8').catch(() => '');
+    const used = this.state.missions.filter((m) => m.projectId === p.id && m.requestId).map((m) => ({ id: m.requestId! }) as BacklogRow);
+    return nextId([...(parseBacklog(raw) ?? []), ...(parseBacklog(own) ?? []), ...used]);
+  }
+
+  private async prepareProject(p: ProjectInfo, m: MissionInfo, requestId: string): Promise<ProjectBrief & { notes: string[] }> {
+    const notes: string[] = [];
+    await mkdir(projectHome(this.dir, p), { recursive: true });
+    // la ligne de la demande dans le carnet du bureau
+    const f = this.carnetFile(p);
     const own = this.carnetFile({ ...p, backlogFile: '' });
     const ownRaw = await readFile(own.abs, 'utf8').catch(() => EMPTY_BACKLOG(p.name));
-    const requestId = nextId([...(parseBacklog(raw) ?? []), ...(parseBacklog(ownRaw) ?? [])]);
-    if (!f.external) await writeFile(own.abs, addRow(ownRaw, { id: requestId, title: m.title, step: 'Questions', state: 'En cours', wait: '—' }));
+    const known = parseBacklog(ownRaw)?.some((r) => r.id === requestId);
+    if (!f.external) await writeFile(own.abs, known ? setRow(ownRaw, requestId, { state: 'En cours', wait: '—' }) : addRow(ownRaw, { id: requestId, title: m.title, step: 'Questions', state: 'En cours', wait: '—' }));
     const isGit = (await git(p.path, ['rev-parse', '--is-inside-work-tree'])).out === 'true';
     const branch = isGit && p.access !== 'read' ? `bureau/${requestId.toLowerCase()}-${slug(m.title)}` : '';
     m.branch = branch || undefined;
@@ -1234,8 +1482,19 @@ export class Bureau {
       commands: p.commands.filter((c) => c.confirmed).map((c) => ({ name: c.name, cmd: c.cmd })),
       readFirst: p.readFirst, map: ctx.map, mapCommit: ctx.commit, diffSince: ctx.diff,
       backlog: f.external ? p.backlogFile : f.abs, backlogExternal: f.external, dirty, mapPath,
-      deliverDir: m.folder, requestId: requestId || 'D-?',
+      deliverDir: m.folder, requestId: requestId || 'D-?', homeDir: projectHome(this.dir, p), lastRequest: await this.lastRequest(p, m),
     };
+  }
+
+  /** La dernière demande du projet avant celle-ci (rangée dans Projets/<projet>/demandes/), et son rapport s'il est court. */
+  private async lastRequest(p: ProjectInfo, m: MissionInfo): Promise<{ folder: string; report: string | null } | null> {
+    const home = path.join(projectHome(this.dir, p), 'demandes');
+    const prev = this.state.missions
+      .filter((x) => x.projectId === p.id && x.id !== m.id && x.createdAt <= m.createdAt && x.folder.startsWith(home + path.sep))
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (!prev) return null;
+    const report = await readFile(path.join(prev.folder, 'rapport.md'), 'utf8').catch(() => null);
+    return { folder: path.relative(home, prev.folder), report: report ? report.trim().slice(0, 1500) : null };
   }
 
   // ── Les commandes du bureau ──
@@ -1247,7 +1506,8 @@ export class Bureau {
     else this.finish(cur, false, cur.lastChefText, 0, true);
   }
 
-  answer(requestId: string, allow: boolean) {
+  answer(requestId: string, allow: boolean, scope?: 'once' | 'request') {
+    if (this.settleAsk(requestId, allow ? (scope === 'request' ? 'request' : 'once') : 'no')) return;
     const cur = this.current;
     const l = cur?.live;
     if (!cur || !l || !l.norm.hasRequest(requestId)) return;

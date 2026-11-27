@@ -111,6 +111,10 @@ function TeamTab({ draft, setDraft }: TabProps) {
         <label className="radio"><input type="radio" checked={draft.permission === 'auto'} onChange={() => setDraft({ ...draft, permission: 'auto' })} /> L’équipe décide seule, et lève la main pour les gestes risqués</label>
         <label className="radio"><input type="radio" checked={draft.permission === 'ask'} onChange={() => setDraft({ ...draft, permission: 'ask' })} /> Elle demande avant chaque commande</label>
       </div>
+      <div className="field">
+        <span>Économie</span>
+        <label className="radio"><input type="checkbox" checked={draft.lightSonnet} onChange={(e) => setDraft({ ...draft, lightSonnet: e.target.checked })} /> Rangement, docs ou git : Max et la Rédaction passent sur Sonnet 5.5</label>
+      </div>
     </>
   );
 }
@@ -176,6 +180,7 @@ const STATES: [string, string, string][] = [
   ['Travaille', 'Affiche l’action en cours', '#3ddc97'], ['Attend ta réponse', 'Main levée', '#4fb3ff'],
   ['Pause café', 'Plafond atteint, reprise auto', '#c8a27a'], ['Bloqué', 'Aucune action depuis le délai', '#ff9f43'],
   ['Planté', 'Erreur ou processus arrêté', '#ff5d5d'], ['Terminé', 'Rapport rendu', '#9aa3b5'],
+  ['⏸ Interrompu', 'Le bureau a été coupé pendant son travail', '#a7abb5'],
 ];
 const ALERTS: [keyof AlertSettings, string][] = [['crash', 'Agent planté'], ['question', 'Question de Max'], ['pause', 'Pause café et reprise'], ['done', 'Demande terminée'], ['blocked', 'Agent bloqué'], ['model', 'Bascule de modèle']];
 
